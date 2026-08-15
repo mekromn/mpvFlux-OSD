@@ -39,8 +39,18 @@ jobs:
 
       - name: Clone exact Vulkan Android wrapper lineage
         run: |
+          set -euxo pipefail
           git clone https://github.com/marlboro-advance/mpvlibAndroid.git "$RUNNER_TEMP/mpvlibAndroid"
           git -C "$RUNNER_TEMP/mpvlibAndroid" checkout --detach f692ce44b04721d68131cdf10692f7224791d4f4
+
+          # The pinned wrapper contains helper scripts (notably shaderc.sh) with
+          # non-executable git modes even though buildall.sh invokes them directly.
+          # Normalize executable bits only in the ephemeral CI checkout.
+          chmod +x "$RUNNER_TEMP/mpvlibAndroid/buildscripts/buildall.sh"
+          chmod +x "$RUNNER_TEMP/mpvlibAndroid/buildscripts/download.sh"
+          chmod +x "$RUNNER_TEMP/mpvlibAndroid/buildscripts/include/"*.sh
+          chmod +x "$RUNNER_TEMP/mpvlibAndroid/buildscripts/scripts/"*.sh
+          chmod +x "$RUNNER_TEMP/mpvlibAndroid/gradlew"
 
       - name: Download Android SDK NDK and native dependencies
         working-directory: ${{ runner.temp }}/mpvlibAndroid/buildscripts
@@ -70,13 +80,20 @@ jobs:
           git -C deps/mpv status --short
           git -C deps/mpv diff --stat
 
-      - name: Build patched arm64 libmpv and Android AAR
+      - name: Build patched arm64 libmpv
+        working-directory: ${{ runner.temp }}/mpvlibAndroid/buildscripts
+        run: |
+          set -euxo pipefail
+          ./buildall.sh --arch arm64 mpv
+          test -s prefix/arm64/lib/libmpv.so
+          ls -lh prefix/arm64/lib/libmpv.so
+
+      - name: Package patched arm64 Android AAR
         working-directory: ${{ runner.temp }}/mpvlibAndroid/buildscripts
         env:
           GRADLE_OPTS: -Xmx4G
         run: |
           set -euxo pipefail
-          ./buildall.sh --arch arm64 mpv
           ./buildall.sh --arch arm64 -n
 
       - name: Verify patched AAR before app build
