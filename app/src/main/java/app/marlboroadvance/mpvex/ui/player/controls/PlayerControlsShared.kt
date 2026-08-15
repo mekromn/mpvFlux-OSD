@@ -575,6 +575,19 @@ fun RenderPlayerButton(
       )
     }
 
+    PlayerButton.SHADER_LAB -> {
+      ControlsButton(
+        icon = button.icon,
+        onClick = {
+          clickEvent()
+          onOpenPanel(Panels.VideoFilters)
+        },
+        color = controlColor,
+        modifier = Modifier.size(buttonSize),
+        shape = buttonShape,
+      )
+    }
+
     PlayerButton.MORE_OPTIONS -> {
       ControlsButton(
         Icons.Default.MoreVert,
