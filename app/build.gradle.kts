@@ -1,4 +1,5 @@
 import com.android.build.api.variant.FilterConfiguration
+import java.util.Base64
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -121,6 +122,10 @@ android {
     }
   }
 
+  sourceSets {
+    getByName("main").res.srcDir(project.layout.buildDirectory.dir("generated/mpvlabIcon/res"))
+  }
+
   @Suppress("UnstableApiUsage")
   androidResources {
     generateLocaleConfig = true
@@ -167,6 +172,34 @@ composeCompiler {
 
 room {
   schemaDirectory("$projectDir/schemas")
+}
+
+val generateMpvLabLauncherIcon by tasks.registering {
+  val sourceParts = fileTree("icon-source") {
+    include("ic_launcher_mplab.b64.*")
+  }
+  val outputFile = project.layout.buildDirectory.file(
+    "generated/mpvlabIcon/res/drawable-nodpi/ic_launcher_mplab.webp"
+  )
+
+  inputs.files(sourceParts)
+  outputs.file(outputFile)
+
+  doLast {
+    val encoded = sourceParts.files
+      .sortedBy { it.name }
+      .joinToString(separator = "") { file ->
+        file.readText().filterNot { it.isWhitespace() }
+      }
+
+    val target = outputFile.get().asFile
+    target.parentFile.mkdirs()
+    target.writeBytes(Base64.getDecoder().decode(encoded))
+  }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+  dependsOn(generateMpvLabLauncherIcon)
 }
 
 dependencies {
