@@ -2,20 +2,39 @@ package app.marlboroadvance.mpvex.ui.player
 
 import android.content.Context
 import app.marlboroadvance.mpvex.BuildConfig
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.security.MessageDigest
+import java.util.Base64
 import java.util.zip.ZipInputStream
 
 /**
  * Installs the exact Shader Lab v6.1.1 workstation bundled in the APK into
  * mpvLab's private files directory. No shared-storage /mpv folder is required.
  *
+ * The source workstation ZIP is stored as small Base64 asset chunks because
+ * some repository/API paths can silently truncate binary payloads. We rebuild
+ * it byte-for-byte at runtime and require the known SHA-256 before extraction.
+ *
  * Engine files are refreshed when the app build changes while user preset/state
  * files are preserved because extraction only overwrites files present in the
  * bundled engine archive.
  */
 object ShaderLabRuntime {
-  private const val ASSET_ZIP = "mpvlab/pixel9-mpv-shader-lab-workstation-v6.1.1.zip"
-  private const val ENGINE_REVISION = "6.1.1-native-bridge-2"
+  private const val ENGINE_REVISION = "6.1.1-native-bridge-3"
+  private const val PAYLOAD_SHA256 = "e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6"
+
+  private val payloadParts =
+    listOf(
+      "mpvlab/payload/workstation.b64.00",
+      "mpvlab/payload/workstation.b64.01",
+      "mpvlab/payload/workstation.b64.02",
+      "mpvlab/payload/workstation.b64.03",
+      "mpvlab/payload/workstation.b64.04",
+      "mpvlab/payload/workstation.b64.05",
+      "mpvlab/payload/workstation.b64.06",
+      "mpvlab/payload/workstation.b64.07",
+    )
 
   data class Paths(
     val root: File,
@@ -66,25 +85,52 @@ object ShaderLabRuntime {
       stateDir = File(root, "state"),
     )
 
+  private fun loadBundledArchive(context: Context): ByteArray {
+    val encoded =
+      buildString {
+        payloadParts.forEach { part ->
+          context.assets.open(part).bufferedReader().use { reader ->
+            reader.forEachLine { line ->
+              line.forEach { ch -> if (!ch.isWhitespace()) append(ch) }
+            }
+          }
+        }
+      }
+
+    val decoded = Base64.getDecoder().decode(encoded)
+    val digest =
+      MessageDigest
+        .getInstance("SHA-256")
+        .digest(decoded)
+        .joinToString(separator = "") { byte ->
+          (byte.toInt() and 0xff).toString(16).padStart(2, '0')
+        }
+
+    require(digest == PAYLOAD_SHA256) {
+      "Bundled Shader Lab payload failed SHA-256 verification: $digest"
+    }
+    return decoded
+  }
+
   private fun unzipBundledEngine(context: Context, root: File) {
     val rootCanonical = root.canonicalFile
-    context.assets.open(ASSET_ZIP).use { input ->
-      ZipInputStream(input).use { zip ->
-        while (true) {
-          val entry = zip.nextEntry ?: break
-          val target = File(root, entry.name).canonicalFile
-          require(target.path == rootCanonical.path || target.path.startsWith(rootCanonical.path + File.separator)) {
-            "Unsafe Shader Lab archive entry: ${entry.name}"
-          }
+    val archive = loadBundledArchive(context)
 
-          if (entry.isDirectory) {
-            target.mkdirs()
-          } else {
-            target.parentFile?.mkdirs()
-            target.outputStream().use { output -> zip.copyTo(output) }
-          }
-          zip.closeEntry()
+    ZipInputStream(ByteArrayInputStream(archive)).use { zip ->
+      while (true) {
+        val entry = zip.nextEntry ?: break
+        val target = File(root, entry.name).canonicalFile
+        require(target.path == rootCanonical.path || target.path.startsWith(rootCanonical.path + File.separator)) {
+          "Unsafe Shader Lab archive entry: ${entry.name}"
         }
+
+        if (entry.isDirectory) {
+          target.mkdirs()
+        } else {
+          target.parentFile?.mkdirs()
+          target.outputStream().use { output -> zip.copyTo(output) }
+        }
+        zip.closeEntry()
       }
     }
   }
