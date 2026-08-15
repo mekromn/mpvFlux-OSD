@@ -1,8 +1,9 @@
-# MpvFlux
+# MpvFlux-OSD
 
 A fork of MpvEx, free and open source media player app
 
 # Features
+• Added Shader Lab OSD and improved video player interface (MpvFlux-OSD feature)
 
 • Improved the Mediastore scanning
 
