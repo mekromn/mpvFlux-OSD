@@ -15,7 +15,7 @@ import java.util.zip.ZipInputStream
  */
 object ShaderLabRuntime {
   private const val ASSET_ZIP = "mpvlab/pixel9-mpv-shader-lab-workstation-v6.1.1.zip"
-  private const val ENGINE_REVISION = "6.1.1-native-bridge-1"
+  private const val ENGINE_REVISION = "6.1.1-native-bridge-2"
 
   data class Paths(
     val root: File,
@@ -154,7 +154,7 @@ object ShaderLabRuntime {
         for i = 1, 10 do
             lines[#lines + 1] = "__user" .. tostring(i) .. "=" .. (user_slot_exists[i] and "1" or "0")
         end
-        mp.set_property("user-data/p9lab/native-state", table.concat(lines, "\\n"))
+        mp.set_property("user-data/p9lab/native-state", table.concat(lines, "\n"))
     end
     """.trimIndent()
 
