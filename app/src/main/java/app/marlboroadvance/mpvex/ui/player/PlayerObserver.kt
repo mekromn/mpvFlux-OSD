@@ -32,6 +32,14 @@ class PlayerObserver(
     value: String,
   ) {
     if (activity.player.isExiting) return
+
+    // Shader Lab's controller state is already an observed libmpv property.
+    // Capture it here before the generic activity callback so native Compose UI
+    // can react immediately instead of polling through JNI every 200 ms.
+    if (property == ShaderLabStateBus.PROPERTY) {
+      ShaderLabStateBus.update(value)
+    }
+
     activity.runOnUiThread { activity.onObserverEvent(property, value) }
   }
 
