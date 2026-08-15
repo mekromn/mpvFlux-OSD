@@ -1,0 +1,131 @@
+name: mpvLab Live GPU Core Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/native-shader-lab
+    paths:
+      - .github/workflows/mpvlab-live-gpu-core.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mpvlab-live-gpu-core
+  cancel-in-progress: true
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout mpvLab branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/native-shader-lab
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake pkg-config libtool ninja-build python3-pip nasm unzip wget meson
+
+      - name: Clone exact Vulkan Android wrapper lineage
+        run: |
+          git clone https://github.com/marlboro-advance/mpvlibAndroid.git "$RUNNER_TEMP/mpvlibAndroid"
+          git -C "$RUNNER_TEMP/mpvlibAndroid" checkout --detach f692ce44b04721d68131cdf10692f7224791d4f4
+
+      - name: Download Android SDK NDK and native dependencies
+        working-directory: ${{ runner.temp }}/mpvlibAndroid/buildscripts
+        run: |
+          unset ANDROID_SDK_ROOT
+          ./download.sh
+
+      - name: Pin proven Pixel dependency revisions and backport vo-gpu PARAM support
+        working-directory: ${{ runner.temp }}/mpvlibAndroid/buildscripts
+        run: |
+          set -euxo pipefail
+
+          # Revisions recovered from the currently proven Vulkan APK/native binaries.
+          git -C deps/ffmpeg checkout --detach 5ba2525c7a
+          git -C deps/libplacebo checkout --detach c93aa134
+          git -C deps/libplacebo submodule update --init --recursive
+          git -C deps/libass checkout --detach fadc390583f24eb5cf98f16925fd3adee50bca88
+          git -C deps/dav1d checkout --detach daef39627713a3e09873e78df65b268386cb4c20
+
+          # Preserve the exact mpv revision that has the Pixel vo=gpu brightness behavior.
+          git -C deps/mpv checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
+
+          # Backport only vo_gpu tunable shader parameters. Do not switch to gpu-next.
+          git -C deps/mpv cherry-pick --no-commit 0d655fe66590009e1d77a17581257d677286531a
+
+          echo "mpv base + backport:"
+          git -C deps/mpv status --short
+          git -C deps/mpv diff --stat
+
+      - name: Build patched arm64 libmpv and Android AAR
+        working-directory: ${{ runner.temp }}/mpvlibAndroid/buildscripts
+        env:
+          GRADLE_OPTS: -Xmx4G
+        run: |
+          set -euxo pipefail
+          ./buildall.sh --arch arm64 mpv
+          ./buildall.sh --arch arm64 -n
+
+      - name: Verify patched AAR before app build
+        run: |
+          set -euxo pipefail
+          AAR="$RUNNER_TEMP/mpvlibAndroid/app/build/outputs/aar/app-release.aar"
+          test -s "$AAR"
+          rm -rf "$RUNNER_TEMP/aar-check"
+          mkdir -p "$RUNNER_TEMP/aar-check"
+          unzip -q "$AAR" -d "$RUNNER_TEMP/aar-check"
+          test -s "$RUNNER_TEMP/aar-check/jni/arm64-v8a/libmpv.so"
+
+          echo "Embedded mpv version:"
+          strings "$RUNNER_TEMP/aar-check/jni/arm64-v8a/libmpv.so" | grep -m1 '^mpv v' || true
+
+          echo "vo_gpu PARAM support markers:"
+          strings "$RUNNER_TEMP/aar-check/jni/arm64-v8a/libmpv.so" | grep -E -m8 'Missing type for param|glsl-shader-opts|tunable|PARAM' || true
+
+          echo "AAR size:"
+          ls -lh "$AAR"
+
+      - name: Install stable mpvLab dev signing key
+        run: |
+          mkdir -p "$HOME/.android"
+          base64 -d .github/dev-signing/mpvlab-debug.keystore.b64 > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build mpvLab Pixel APK against patched core
+        env:
+          GIT_SHA: ${{ github.sha }}-livegpu
+        run: |
+          set -euxo pipefail
+          cp "$RUNNER_TEMP/mpvlibAndroid/app/build/outputs/aar/app-release.aar" app/libs/mpv-android-lib-v0.0.1.aar
+          chmod +x ./gradlew
+          ./gradlew assembleStandardDebug
+
+      - name: Collect arm64 test APK
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          APK=$(find app/build/outputs/apk -type f -name '*arm64-v8a*debug*.apk' | head -1)
+          test -n "$APK"
+          cp "$APK" artifacts/mpvLab-live-gpu-core-arm64.apk
+          ls -lh artifacts/mpvLab-live-gpu-core-arm64.apk
+
+      - name: Upload live GPU core test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpvLab-Live-GPU-Core-ARM64
+          path: artifacts/mpvLab-live-gpu-core-arm64.apk
+          if-no-files-found: error
+          compression-level: 0
