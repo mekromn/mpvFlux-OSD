@@ -83,8 +83,25 @@ jobs:
       - name: Build patched arm64 libmpv
         working-directory: ${{ runner.temp }}/mpvlibAndroid/buildscripts
         run: |
-          set -euxo pipefail
-          ./buildall.sh --arch arm64 mpv
+          set -uo pipefail
+          LOG="$RUNNER_TEMP/mpv-arm64.log"
+
+          set +e
+          ./buildall.sh --arch arm64 mpv >"$LOG" 2>&1
+          STATUS=$?
+          set -e
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "===== mpv-arm64: first/last compiler and build errors ====="
+            grep -n -E '(^|[[:space:]])(error:|fatal error:|FAILED:|undefined reference|ninja: build stopped|meson\.build:|CMake Error|No such file|Permission denied)' "$LOG" | head -120 || true
+            echo "----- latest matching errors -----"
+            grep -n -E '(^|[[:space:]])(error:|fatal error:|FAILED:|undefined reference|ninja: build stopped|meson\.build:|CMake Error|No such file|Permission denied)' "$LOG" | tail -120 || true
+            echo "===== mpv-arm64: last 250 log lines ====="
+            tail -250 "$LOG" || true
+            exit "$STATUS"
+          fi
+
+          echo "mpv-arm64 completed successfully"
           test -s prefix/arm64/lib/libmpv.so
           ls -lh prefix/arm64/lib/libmpv.so
 
@@ -93,8 +110,25 @@ jobs:
         env:
           GRADLE_OPTS: -Xmx4G
         run: |
-          set -euxo pipefail
-          ./buildall.sh --arch arm64 -n
+          set -uo pipefail
+          LOG="$RUNNER_TEMP/aar-arm64.log"
+
+          set +e
+          ./buildall.sh --arch arm64 -n >"$LOG" 2>&1
+          STATUS=$?
+          set -e
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "===== aar-arm64: first/last build errors ====="
+            grep -n -E '(^|[[:space:]])(error:|fatal error:|FAILED:|undefined reference|ninja: build stopped|meson\.build:|CMake Error|No such file|Permission denied|FAILURE:)' "$LOG" | head -120 || true
+            echo "----- latest matching errors -----"
+            grep -n -E '(^|[[:space:]])(error:|fatal error:|FAILED:|undefined reference|ninja: build stopped|meson\.build:|CMake Error|No such file|Permission denied|FAILURE:)' "$LOG" | tail -120 || true
+            echo "===== aar-arm64: last 250 log lines ====="
+            tail -250 "$LOG" || true
+            exit "$STATUS"
+          fi
+
+          echo "aar-arm64 completed successfully"
 
       - name: Verify patched AAR before app build
         run: |
