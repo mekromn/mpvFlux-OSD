@@ -21,7 +21,7 @@ import java.util.zip.ZipInputStream
  * bundled engine archive.
  */
 object ShaderLabRuntime {
-  private const val ENGINE_REVISION = "6.1.1-native-bridge-3"
+  private const val ENGINE_REVISION = "6.1.1-native-bridge-4"
   private const val PAYLOAD_SHA256 = "e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6"
 
   private val payloadParts =
@@ -136,8 +136,6 @@ object ShaderLabRuntime {
   }
 
   private fun patchForPrivateRuntime(paths: Paths) {
-    // The uploaded workstation intentionally used /storage/emulated/0/mpv.
-    // Replace that one deployment root everywhere with mpvLab's private root.
     val externalRoot = "/storage/emulated/0/mpv"
     listOf(paths.config, paths.controller, paths.inputConf).forEach { file ->
       if (file.isFile) {
@@ -145,8 +143,6 @@ object ShaderLabRuntime {
       }
     }
 
-    // mpvLab explicitly loads the controller and input.conf through libmpv so
-    // the internal mpv.conf must not load a second copy of the same script.
     if (paths.config.isFile) {
       val cleaned =
         paths.config
@@ -164,11 +160,20 @@ object ShaderLabRuntime {
   private fun patchControllerForNativeState(controller: File) {
     if (!controller.isFile) return
     var text = controller.readText()
-    if (text.contains("mpvLab native bridge v1")) return
+    if (text.contains("mpvLab native bridge v2")) return
+
+    val previewGate = "if not ui_visible or preview_active or not is_sdr() then return end"
+    require(text.contains(previewGate)) { "Unexpected Shader Lab v6.1.1 preview layout" }
+    text = text.replace(previewGate, "if preview_active or not is_sdr() then return end")
 
     val marker = "local function phone_left()"
     require(text.contains(marker)) { "Unexpected Shader Lab v6.1.1 controller layout" }
     text = text.replace(marker, NATIVE_STATE_PUBLISHER + "\n\n" + marker)
+
+    val setRegistration = "mp.register_script_message(\"p9lab-set\",set_by_key)"
+    require(text.contains(setRegistration)) { "Unexpected Shader Lab v6.1.1 set registration" }
+    text = text.replace(setRegistration, "mp.register_script_message(\"p9lab-set\",native_set_by_key)")
+
     text += NATIVE_BRIDGE_TAIL
     controller.writeText(text)
   }
@@ -178,7 +183,12 @@ object ShaderLabRuntime {
 
   private val NATIVE_STATE_PUBLISHER =
     """
-    -- mpvLab native bridge v1
+    -- mpvLab native bridge v2
+    local native_last_error = ""
+    local native_apply_busy = false
+    local native_shader_dirty = false
+    local native_shader_timer = nil
+
     local function publish_native_state()
         local lines = {
             "__version=6.1.1",
@@ -188,6 +198,9 @@ object ShaderLabRuntime {
             "__sdr=" .. (is_sdr() and "1" or "0"),
             "__shader_slot=" .. ((last_good_path == SLOT_A) and "A" or "B"),
             "__swaps=" .. tostring(shader_apply_count),
+            "__apply_busy=" .. (native_apply_busy and "1" or "0"),
+            "__shader_dirty=" .. (native_shader_dirty and "1" or "0"),
+            "__error=" .. tostring(native_last_error or ""):gsub("[\r\n]", " "),
         }
         for _, it in ipairs(items) do
             if it.kind ~= "action" then
@@ -202,18 +215,101 @@ object ShaderLabRuntime {
         end
         mp.set_property("user-data/p9lab/native-state", table.concat(lines, "\n"))
     end
+
+    local function native_flush_shader()
+        native_shader_timer = nil
+        if not native_shader_dirty or native_apply_busy then return end
+        if preview_active or bypassed then
+            publish_native_state()
+            return
+        end
+
+        native_shader_dirty = false
+        native_apply_busy = true
+        local ok, err = apply_shader(B)
+        native_apply_busy = false
+        if ok then
+            native_last_error = ""
+        else
+            native_last_error = tostring(err or "unknown shader apply failure")
+            msg.error("mpvLab shader apply failed: " .. native_last_error)
+            mp.osd_message("mpvLab shader error:\n" .. native_last_error, 4)
+        end
+        publish_native_state()
+
+        if native_shader_dirty and not native_shader_timer then
+            native_shader_timer = mp.add_timeout(0.008, native_flush_shader)
+        end
+    end
+
+    local function native_schedule_shader()
+        native_shader_dirty = true
+        if not native_shader_timer and not native_apply_busy then
+            native_shader_timer = mp.add_timeout(0.008, native_flush_shader)
+        end
+    end
+
+    local function native_set_by_key(key, value)
+        local it = by_key[key]
+        local num = tonumber(value)
+        if not it or not num or it.kind == "action" then return end
+
+        B[key] = round_if_needed(clamp(num, it.min, it.max), it.integer)
+        selected = it.index
+
+        if it.kind == "controller" then
+            publish_native_state()
+            return
+        elseif it.kind == "morph" then
+            apply_morph()
+            publish_native_state()
+            return
+        elseif it.kind == "granularity" then
+            step_mode = B[key]
+            sync_granularity_item()
+            publish_native_state()
+            return
+        end
+
+        enforce_order(B, key)
+        if it.kind == "property" then
+            if not unsupported_properties[key] then
+                local ok, err = mp.set_property_number(key, B[key])
+                if not ok then
+                    unsupported_properties[key] = true
+                    native_last_error = "Property unavailable: " .. tostring(key) .. " (" .. tostring(err) .. ")"
+                else
+                    native_last_error = ""
+                end
+            end
+            publish_native_state()
+        else
+            native_schedule_shader()
+            publish_native_state()
+        end
+    end
     """.trimIndent()
 
   private val NATIVE_BRIDGE_TAIL =
     """
 
-    -- mpvLab native bridge v1 registrations
+    -- mpvLab native bridge v2 registrations
+    mp.register_script_message("p9lab-native-set", native_set_by_key)
+    mp.register_script_message("p9lab-native-flush", function()
+        if native_shader_timer then
+            native_shader_timer:kill()
+            native_shader_timer = nil
+        end
+        native_flush_shader()
+    end)
     mp.register_script_message("p9lab-native-reset-all", function()
         reset_all()
+        native_last_error = ""
         publish_native_state()
     end)
     mp.register_script_message("p9lab-native-revert-video-start", function()
         revert_video_start()
+        native_last_error = ""
         publish_native_state()
     end)
     mp.register_script_message("p9lab-user-clear", function(slot)
@@ -229,7 +325,7 @@ object ShaderLabRuntime {
         load_state()
         publish_native_state()
     end)
-    mp.add_periodic_timer(0.20, publish_native_state)
+    mp.add_periodic_timer(1.00, publish_native_state)
     publish_native_state()
     """.trimIndent()
 }
