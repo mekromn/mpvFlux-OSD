@@ -93,31 +93,57 @@ class MPVView(
   var aid: Int by TrackDelegate("aid")
 
   override fun initOptions() {
+    // mpvLab is self-contained. Install the exact v6.1.1 workstation bundled
+    // inside the APK and make libmpv use its private config/controller/input.
+    val shaderLab = ShaderLabRuntime.install(context)
+    MPVLib.setOptionString("config", "yes")
+    MPVLib.setOptionString("config-dir", shaderLab.root.absolutePath)
+    MPVLib.setOptionString("script", shaderLab.controller.absolutePath)
+    MPVLib.setOptionString("input-conf", shaderLab.inputConf.absolutePath)
+
     val profile = decoderPreferences.profile.get()
     MPVLib.setOptionString("profile", profile)
-    setVo(if (decoderPreferences.gpuNext.get()) "gpu-next" else "gpu")
-    
-    // Set GPU API context (Vulkan or OpenGL)
-    if (decoderPreferences.useVulkan.get()) {
-      MPVLib.setOptionString("gpu-context", "androidvk")
-    }
 
-    // Set hwdec with fallback order: HW+ (mediacodec) -> HW (mediacodec-copy) -> SW (no)
+    // The Pixel 9 Pro XL expanded-brightness path is empirically tied to
+    // vo=gpu + Vulkan. gpu-next is deliberately not used for Shader Lab.
+    setVo("gpu")
+    MPVLib.setOptionString("gpu-context", "androidvk")
+    MPVLib.setOptionString("gpu-api", "vulkan")
+    MPVLib.setOptionString("fbo-format", "rgba16f")
+
+    // Match the proven v6.1.1 workstation render path even on a completely
+    // fresh install with no external mpv.conf.
+    MPVLib.setOptionString("scale", "ewa_lanczossharp")
+    MPVLib.setOptionString("cscale", "ewa_lanczos")
+    MPVLib.setOptionString("dscale", "ewa_lanczos")
+    MPVLib.setOptionString("correct-downscaling", "yes")
+    MPVLib.setOptionString("sigmoid-upscaling", "yes")
+    MPVLib.setOptionString("linear-downscaling", "yes")
+    MPVLib.setOptionString("deband", "yes")
+    MPVLib.setOptionString("deband-iterations", "2")
+    MPVLib.setOptionString("deband-threshold", "24")
+    MPVLib.setOptionString("deband-range", "16")
+    MPVLib.setOptionString("deband-grain", "8")
+    MPVLib.setOptionString("dither", "fruit")
+    MPVLib.setOptionString("dither-depth", "auto")
+
+    // Keep mediacodec-copy first because this is the path used while the
+    // Pixel Shader Lab image-quality/brightness tuning was established.
     MPVLib.setOptionString(
       "hwdec",
-      if (decoderPreferences.tryHWDecoding.get()) "mediacodec,mediacodec-copy,no" else "no",
+      if (decoderPreferences.tryHWDecoding.get()) "mediacodec-copy,mediacodec,no" else "no",
     )
     MPVLib.setOptionString("hwdec-codecs", "all")
 
     if (decoderPreferences.useYUV420P.get()) {
       MPVLib.setOptionString("vf", "format=yuv420p")
     }
-    
+
     // Cap demuxer cache for mobile to prevent memory issues
     val cacheMegs = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) 64 else 32
     MPVLib.setOptionString("demuxer-max-bytes", "${cacheMegs * 1024 * 1024}")
     MPVLib.setOptionString("demuxer-max-back-bytes", "${cacheMegs * 1024 * 1024}")
-    
+
     val logLevel = if (advancedPreferences.verboseLogging.get()) "v" else "warn"
     MPVLib.setOptionString("msg-level", "all=$logLevel")
 
@@ -131,9 +157,13 @@ class MPVView(
     screenshotDir.mkdirs()
     MPVLib.setOptionString("screenshot-directory", screenshotDir.path)
 
-    VideoFilters.entries.forEach {
-      MPVLib.setOptionString(it.mpvProperty, it.preference(decoderPreferences).get().toString())
-    }
+    // Start mpv image properties neutral. Shader Lab owns the live values via
+    // its Lua controller so Android and the generated GLSL bank cannot diverge.
+    MPVLib.setOptionString("brightness", "0")
+    MPVLib.setOptionString("contrast", "0")
+    MPVLib.setOptionString("gamma", "0")
+    MPVLib.setOptionString("saturation", "0")
+    MPVLib.setOptionString("hue", "0")
 
     MPVLib.setOptionString("speed", playerPreferences.defaultSpeed.get().toString())
     MPVLib.setOptionString("vd-lavc-film-grain", "cpu")
@@ -151,10 +181,12 @@ class MPVView(
   }
 
   override fun postInitOptions() {
+    // GPU debanding is already part of the bundled workstation. Preserve CPU
+    // mode only when the user explicitly selected it.
     when (decoderPreferences.debanding.get()) {
       Debanding.None -> {}
       Debanding.CPU -> MPVLib.command("vf", "add", "@deband:gradfun=radius=12")
-      Debanding.GPU -> MPVLib.setOptionString("deband", "yes")
+      Debanding.GPU -> MPVLib.setPropertyString("deband", "yes")
     }
 
     advancedPreferences.enabledStatisticsPage.get().let {
@@ -221,6 +253,7 @@ class MPVView(
       "user-data/mpvex/seek_by_with_text" to MPVLib.MpvFormat.MPV_FORMAT_STRING,
       "user-data/mpvex/seek_to_with_text" to MPVLib.MpvFormat.MPV_FORMAT_STRING,
       "user-data/mpvex/software_keyboard" to MPVLib.MpvFormat.MPV_FORMAT_STRING,
+      "user-data/p9lab/native-state" to MPVLib.MpvFormat.MPV_FORMAT_STRING,
     )
 
   private fun setupAudioOptions() {
@@ -230,7 +263,7 @@ class MPVView(
     MPVLib.setOptionString("audio-delay", (audioPreferences.defaultAudioDelay.get() / 1000.0).toString())
     MPVLib.setOptionString("audio-pitch-correction", audioPreferences.audioPitchCorrection.get().toString())
     MPVLib.setOptionString("volume-max", (audioPreferences.volumeBoostCap.get() + 100).toString())
-    
+
     // Volume normalization using dynamic audio normalization filter
     if (audioPreferences.volumeNormalization.get()) {
       MPVLib.setOptionString("af", "dynaudnorm")
@@ -248,7 +281,7 @@ class MPVView(
 
     val fontsDirPath = "${context.filesDir.path}/fonts/"
     MPVLib.setOptionString("sub-fonts-dir", fontsDirPath)
-    
+
     // Delay and speed for both primary and secondary
     val subDelay = (subtitlesPreferences.defaultSubDelay.get() / 1000.0).toString()
     val subSpeed = subtitlesPreferences.defaultSubSpeed.get().toString()
@@ -299,7 +332,7 @@ class MPVView(
     MPVLib.setOptionString("sub-shadow-offset", shadowOffset)
     MPVLib.setOptionString("sub-scale", subScale)
     MPVLib.setOptionString("sub-pos", subPos)
-    
+
     MPVLib.setOptionString("secondary-sub-font-size", fontSize)
     MPVLib.setOptionString("secondary-sub-bold", bold)
     MPVLib.setOptionString("secondary-sub-italic", italic)
