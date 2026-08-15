@@ -73,10 +73,14 @@ jobs:
           # Preserve the exact mpv revision that has the Pixel vo=gpu brightness behavior.
           git -C deps/mpv checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
 
+          # 0d655fe is directly based on this tiny shader-cache helper commit.
+          # It only adds BSTR uniform-name helpers; it does not alter renderer behavior.
+          git -C deps/mpv cherry-pick --no-commit 91ceffce42534a45705617036b6b2a392a32fc57
+
           # Backport only vo_gpu tunable shader parameters. Do not switch to gpu-next.
           git -C deps/mpv cherry-pick --no-commit 0d655fe66590009e1d77a17581257d677286531a
 
-          echo "mpv base + backport:"
+          echo "mpv base + prerequisite + PARAM backport:"
           git -C deps/mpv status --short
           git -C deps/mpv diff --stat
 
