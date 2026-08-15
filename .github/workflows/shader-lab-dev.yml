@@ -1,4 +1,4 @@
-name: Shader Lab Dev APK
+name: mpvLab Dev APK
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: shader-lab-dev-${{ github.ref }}
+  group: mpvlab-dev-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Shader Lab branch
+      - name: Checkout mpvLab branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -50,16 +50,16 @@ jobs:
           UNIVERSAL_APK=$(find "$DEBUG_DIR" -maxdepth 1 -type f -name '*universal*debug*.apk' | head -n 1)
 
           test -n "$ARM64_APK"
-          cp "$ARM64_APK" output/MpvFlux-ShaderLab-dev-arm64-v8a.apk
+          cp "$ARM64_APK" output/mpvLab-dev-arm64-v8a.apk
 
           if [ -n "$UNIVERSAL_APK" ]; then
-            cp "$UNIVERSAL_APK" output/MpvFlux-ShaderLab-dev-universal.apk
+            cp "$UNIVERSAL_APK" output/mpvLab-dev-universal.apk
           fi
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: Shader-Lab-Dev-APK
+          name: mpvLab-Dev-APK
           path: output/*.apk
           if-no-files-found: error
           retention-days: 14
