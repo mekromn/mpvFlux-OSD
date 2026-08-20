@@ -144,8 +144,11 @@ jobs:
           set -euo pipefail
 
           apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
-          apkanalyzer="$(find "$ANDROID_HOME" -type f -name apkanalyzer -print | sort -V | tail -n 1)"
-          if [[ -z "$apksigner" || -z "$apkanalyzer" ]]; then
+          apkanalyzer="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+          if [[ ! -x "$apkanalyzer" ]]; then
+            apkanalyzer="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 4 -type f -name apkanalyzer -print | sort -V | tail -n 1)"
+          fi
+          if [[ -z "$apksigner" || -z "$apkanalyzer" || ! -x "$apkanalyzer" ]]; then
             echo "::error::Android apksigner/apkanalyzer was not found on the runner."
             exit 1
           fi
@@ -175,8 +178,13 @@ jobs:
           "$apksigner" verify --verbose --print-certs "${{ steps.apks.outputs.arm64 }}"
           "$apksigner" verify --verbose --print-certs "${{ steps.apks.outputs.universal }}"
 
-          arm64_cert="$("$apksigner" verify --print-certs "${{ steps.apks.outputs.arm64 }}" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
-          universal_cert="$("$apksigner" verify --print-certs "${{ steps.apks.outputs.universal }}" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
+          extract_certificate_sha256() {
+            "$apksigner" verify --print-certs "$1" |
+              awk -F': ' '/certificate SHA-256 digest:/ { print $NF; exit }'
+          }
+
+          arm64_cert="$(extract_certificate_sha256 "${{ steps.apks.outputs.arm64 }}")"
+          universal_cert="$(extract_certificate_sha256 "${{ steps.apks.outputs.universal }}")"
 
           if [[ -z "$arm64_cert" || "$arm64_cert" != "$universal_cert" ]]; then
             echo "::error::APK signing certificate verification did not produce one matching persistent certificate."
