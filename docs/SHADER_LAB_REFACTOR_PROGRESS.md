@@ -9,7 +9,7 @@ It exists so partial or blocked roadmap steps are preserved without losing the d
 - `R01_STATUS = DONE`
 - `R02_STATUS = DONE`
 - `R03_STATUS = BLOCKED`
-- R03 implementation and unit tests are complete. The current blocker is phone-test APK signing: the fork does not yet have the required persistent GitHub Actions signing secrets, so the updateable Chrovelo Debug APK cannot be produced for the required Pixel device smoke test.
+- R03 implementation, unit tests, and the normal CI build are complete. The current blocker is phone-test APK signing: the fork does not yet have the required persistent GitHub Actions signing secrets, so the updateable Chrovelo Debug APK cannot be produced for the required Pixel device smoke test.
 - The next `Continue roadmap` must resolve and validate R03; do not advance to R04 until the signed APK and Pixel workspace smoke test pass.
 
 ## R01 — Build/release harness for phone-only development
@@ -154,7 +154,8 @@ R02 is complete. The next roadmap step is R03; do not wire the assets into playb
 - Immediate upstream check: **PASS** — `Muhammedahmed18/mpvFlux` remains `f2ed015356a20bb7021e850acc599274a5f91450`; no newer upstream source requires integration.
 - Branch/master synchronization: **PASS** — branch is 0 commits behind `master`; PR #1 reports mergeable.
 - R03 unit tests: **PASS** — `Refactor Dev APK` run #49 (`32393525180`), job `Updateable Chrovelo Debug APKs` (`96504970785`), step `Run Shader Lab workspace unit tests`; Gradle reported `BUILD SUCCESSFUL`, 33 actionable tasks executed.
-- Persistent signing prerequisite: **BLOCKED** — the same run failed at `Prepare persistent signing identity` because `SIGNING_KEYSTORE`, `SIGNING_KEY_ALIAS`, `SIGNING_STORE_PASSWORD`, and `KEY_PASSWORD` are empty/not configured in this fork. The workflow intentionally does not fall back to a disposable runner debug key.
+- Normal CI build: **PASS** — `CI/CD Build` run #17 (`32393525190`), job `build` (`96504971131`) completed successfully; Gradle build and all ABI artifact-upload steps passed.
+- Persistent signing prerequisite: **BLOCKED** — `Refactor Dev APK` run #49 failed at `Prepare persistent signing identity` because `SIGNING_KEYSTORE`, `SIGNING_KEY_ALIAS`, `SIGNING_STORE_PASSWORD`, and `KEY_PASSWORD` are empty/not configured in this fork. The workflow intentionally does not fall back to a disposable runner debug key.
 - Updateable Chrovelo Debug APK: **NOT PRODUCED** because persistent signing is not configured.
 - Pixel 9 Pro XL canonical-workspace smoke test: **BLOCKED** until the persistent signing secrets are configured and the resulting arm64 Chrovelo Debug APK is installed.
 
