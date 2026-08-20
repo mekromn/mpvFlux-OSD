@@ -5,11 +5,13 @@ It exists so partial or blocked roadmap steps are preserved without losing the d
 
 ## Current execution state
 
-- `CURRENT_STEP = R01`
-- `R01_STATUS = BLOCKED`
-- Do not advance to R02 until the R01 GitHub Actions build is observed succeeding and its artifacts are verified.
+- `CURRENT_STEP = R02`
+- `R01_STATUS = DONE`
+- R01 acceptance criteria are satisfied. The next `Continue roadmap` executes R02 only.
 
 ## R01 — Build/release harness for phone-only development
+
+**Status:** `DONE`
 
 ### Implemented
 
@@ -32,10 +34,10 @@ It exists so partial or blocked roadmap steps are preserved without losing the d
 
 ### Upstream check
 
-At R01 execution time:
+At R01 completion time:
 
 - Immediate upstream `Muhammedahmed18/mpvFlux` still points to `f2ed015356a20bb7021e850acc599274a5f91450`.
-- Fork `master` had not gained external/source changes since the roadmap baseline; only the R01 dev-build infrastructure commits were added during this step.
+- No newer upstream source commit needs integration before R02.
 
 ### Relevant commits / PR
 
@@ -46,27 +48,37 @@ At R01 execution time:
 - Branch manual-ref improvement: `0fd95f81dd03969d5e57514208f30f817802f71f`
 - Draft PR: `#1` — `agent/upstream-refactor` → `master`
 
-### Validation completed
+### Successful GitHub Actions validation
 
-- Workflow file is present on both the default branch and refactor branch.
-- Manual workflow target defaults to `agent/upstream-refactor`.
-- No signing key/keystore material was added by R01.
-- Workflow is configured to fail if either required APK is missing.
-- Workflow is configured to fail if APK signature verification fails.
-- Workflow YAML structure was sanity-checked locally.
+- Workflow: `Refactor Dev APK`
+- Run: `#11`
+- Run ID: `32385673806`
+- Job: `Signed phone-test APKs`
+- Job ID: `96479458017`
+- Result: `success`
+- Gradle task: `:app:assembleStandardDebug`
+- Gradle result: `BUILD SUCCESSFUL`
+- APK signature verification: passed for both artifacts using APK Signature Scheme v2.
+- Arm64 artifact:
+  - ID: `9413012997`
+  - name: `mpvFlux-dev-arm64-agent-upstream-refactor-8ca7b4c`
+  - archive size: `62039554` bytes
+  - artifact SHA-256: `96d81010fd0419b1dd1a2639f8cc4ebdc363fbaa76d85b21c6a138af51e8aee5`
+  - expires: `2026-09-19`
+- Universal artifact:
+  - ID: `9413014726`
+  - name: `mpvFlux-dev-universal-agent-upstream-refactor-8ca7b4c`
+  - archive size: `124556466` bytes
+  - artifact SHA-256: `41937324faa6fc9583da4bdbb24a96fa0efb9113b998a598e657d54fc43cdf59`
+  - expires: `2026-09-19`
 
-### Blocker
+### Acceptance criteria
 
-The connected GitHub Actions read surface reports zero PR workflow runs for the R01 head/merge commits, and the available connector does not expose a workflow-dispatch action or an Actions-enable setting. Therefore the roadmap acceptance criterion **“GitHub Actions build succeeds”** has not yet been proven and R01 must not be marked DONE.
+- Manual workflow can be launched from GitHub mobile/web: **PASS**.
+- arm64 artifact produced successfully: **PASS**.
+- universal artifact produced successfully: **PASS**.
+- APK signature verification succeeds: **PASS**.
+- no signing secret/reusable keystore added by R01: **PASS**.
+- successful workflow run recorded in source: **PASS**.
 
-### Required completion check
-
-On the next `Continue roadmap`:
-
-1. Re-check upstream and `master`.
-2. Re-check PR #1 / Actions for a `Refactor Dev APK` run.
-3. If no run exists, verify that Actions is enabled for the fork and manually run **Refactor Dev APK** with the default `ref = agent/upstream-refactor` if the available tooling permits it.
-4. Require successful `Signed phone-test APKs` job.
-5. Verify both arm64 and universal artifacts exist.
-6. Record the run ID/result in the roadmap/progress log.
-7. Mark R01 DONE and advance `CURRENT_STEP` to R02 only after that success.
+R01 is complete. Do not redo it unless the harness regresses or the user explicitly requests it.
