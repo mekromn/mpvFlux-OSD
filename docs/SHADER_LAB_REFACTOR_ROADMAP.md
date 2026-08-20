@@ -166,7 +166,7 @@ The assistant must then:
 
 ### Current pointer
 
-`CURRENT_STEP = R02`
+`CURRENT_STEP = R03`
 
 ---
 
@@ -228,13 +228,13 @@ The assistant must then:
 
 ## R02 — Create a readable Shader Lab source tree and migration inventory
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Goal:** replace the legacy opaque runtime payload model with maintainable source-controlled Lua/GLSL/config assets while preserving proven v6.1.1 behavior.
 
-**Work:**
+**Completed work:**
 
-- Inventory the legacy branch files:
+- Inventoried the legacy branch files:
   - `ShaderLabRuntime.kt`
   - `ShaderLabBridge.kt`
   - `ShaderLabStateBus.kt`
@@ -242,27 +242,37 @@ The assistant must then:
   - shader template/runtime files
   - Lua controller
   - `input.conf` / mpv config dependencies
-- Extract/reference the actual Lua/GLSL/config source as normal repository files.
-- Place canonical source under a clearly named directory, for example:
+- Extracted the actual Lua/GLSL/config source as normal repository files.
+- Placed canonical source under:
   - `app/src/main/assets/mpvlab/source/scripts/`
   - `app/src/main/assets/mpvlab/source/shaders/`
   - `app/src/main/assets/mpvlab/source/config/`
-- Add an engine manifest containing:
+  - plus normalized `docs/` and `misc/` source content.
+- Added `engine-manifest.json` containing:
   - engine version;
   - schema version;
   - file hashes;
   - required mpv options;
-  - supported control catalog version.
-- Do **not** yet wire the engine into playback; this step is source normalization only.
+  - supported control catalog version;
+  - canonical workspace and legacy payload provenance.
+- Added `tools/verify_mpvlab_manifest.py` and `docs/R02_SHADER_LAB_MIGRATION_INVENTORY.md`.
+- Kept this step source-normalization only; the engine is not wired into playback yet.
 
 **Acceptance criteria:**
 
-- Human-readable Shader Lab engine source is present in Git.
-- No Base64 workstation chunks are needed by the new architecture.
-- Legacy branch remains untouched.
-- Engine manifest can verify source integrity.
+- Human-readable Shader Lab engine source is present in Git: **PASS**.
+- No Base64 workstation chunks are needed by the new architecture: **PASS**; they remain only on the read-only legacy branch.
+- Legacy branch remains untouched: **PASS**.
+- Engine manifest can verify source integrity: **PASS**.
 
-**Validation:** repository build still succeeds; asset manifest test/check passes if added.
+**Validation:** **PASS**. The legacy workstation payload matched SHA-256 `e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6`, and `python3 tools/verify_mpvlab_manifest.py` passed before extraction commit `ff9e808770120075838379ff16f07bdb31865c11`. A normal development build passed on commit `516728c3e78d13f203246ae86a634c86d01639ed`: `Refactor Dev APK` run #23 / run ID `32387282949`, job `Signed phone-test APKs` / job ID `96484949926`, including compilation, APK signature verification, and both artifact uploads.
+
+**Completion notes:**
+
+- Added 11 readable v6.1.1 engine files covering config, Lua, shader template/runtime/known-good shader, diagnostics, and legacy documentation.
+- Canonical source is the original v6.1.1 archive before the legacy app-private path rewrite/native-state text injection, preserving `/storage/emulated/0/mpv` for R03.
+- The legacy Kotlin native-state publisher/apply scheduler is preserved as documented behavior to reimplement cleanly in later typed architecture, not injected into the normalized source.
+- Validation artifacts: arm64 ID `9413531715` (`sha256:c2eee0ac7c77a3fd6f47ab870ccbd5d8c3f8cd806fb2789bec5beb9a0a54036c`) and universal ID `9413532666` (`sha256:c11828a729b0a59c0b4ee255079c35548c489bb871d409da828a74688c7a0664`).
 
 ---
 
