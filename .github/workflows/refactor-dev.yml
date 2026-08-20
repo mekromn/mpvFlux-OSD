@@ -64,6 +64,12 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run Shader Lab workspace unit tests
+        run: ./gradlew :app:testStandardDebugUnitTest --stacktrace
+
       - name: Prepare persistent signing identity
         shell: bash
         env:
@@ -98,9 +104,6 @@ jobs:
           echo "CHROVELO_SIGNING_KEY_ALIAS=$SIGNING_KEY_ALIAS_VALUE" >> "$GITHUB_ENV"
           echo "CHROVELO_SIGNING_STORE_PASSWORD=$SIGNING_STORE_PASSWORD_VALUE" >> "$GITHUB_ENV"
           echo "CHROVELO_SIGNING_KEY_PASSWORD=$SIGNING_KEY_PASSWORD_VALUE" >> "$GITHUB_ENV"
-
-      - name: Make Gradle wrapper executable
-        run: chmod +x ./gradlew
 
       - name: Build updateable Chrovelo Debug APKs
         run: >-
