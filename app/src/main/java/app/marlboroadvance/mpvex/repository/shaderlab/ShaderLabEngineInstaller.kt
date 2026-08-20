@@ -5,7 +5,7 @@ import android.content.res.AssetManager
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.file.AtomicMoveNotSupportedException
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -82,9 +83,9 @@ internal data class ShaderLabInstalledManagedFile(
 /**
  * Explicit migration hook for a future engine/schema transition.
  *
- * Same-schema engine revisions do not require a hook. A schema transition is
- * rejected unless one registered migration explicitly accepts the old marker
- * and new manifest.
+ * Same-schema engine revisions do not require a hook unless a registered
+ * version-specific migration explicitly opts in. A schema transition is
+ * rejected unless one registered migration accepts the old marker/new manifest.
  */
 internal interface ShaderLabEngineMigration {
   fun supports(
@@ -427,7 +428,9 @@ class ShaderLabEngineInstaller internal constructor(
   ) {
     if (previousMarker == null) return
     if (previousMarker.schemaVersion == target.schemaVersion) {
-      migrations.filter { it.supports(previousMarker, target) }.forEach { it.migrate(paths) }
+      if (previousMarker.engineVersion != target.engineVersion) {
+        migrations.filter { it.supports(previousMarker, target) }.forEach { it.migrate(paths) }
+      }
       return
     }
 
@@ -466,7 +469,7 @@ class ShaderLabEngineInstaller internal constructor(
           StandardCopyOption.ATOMIC_MOVE,
           StandardCopyOption.REPLACE_EXISTING,
         )
-      } catch (_: AtomicMoveNotSupportedException) {
+      } catch (_: IOException) {
         rollbackCapableReplace(temp, target, backup)
       } catch (_: UnsupportedOperationException) {
         rollbackCapableReplace(temp, target, backup)
@@ -532,7 +535,7 @@ class ShaderLabEngineInstaller internal constructor(
         File(paths.logs, INSTALL_LOG_FILE).appendText("$line\n", Charsets.UTF_8)
       }
     }
-    Log.d(TAG, line)
+    runCatching { Log.d(TAG, line) }
   }
 
   private fun sha256(bytes: ByteArray): String =
