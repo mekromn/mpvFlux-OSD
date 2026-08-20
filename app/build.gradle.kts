@@ -253,6 +253,8 @@ dependencies {
   implementation(libs.nanohttpd)
   implementation(libs.lazycolumnscrollbar)
   implementation(libs.reorderable)
+
+  testImplementation("junit:junit:4.13.2")
 }
 
 /* ---------------- Git helpers ---------------- */
