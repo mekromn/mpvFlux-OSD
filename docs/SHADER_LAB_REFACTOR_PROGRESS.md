@@ -5,9 +5,10 @@ It exists so partial or blocked roadmap steps are preserved without losing the d
 
 ## Current execution state
 
-- `CURRENT_STEP = R02`
+- `CURRENT_STEP = R03`
 - `R01_STATUS = DONE`
-- R01 acceptance criteria are satisfied. The next `Continue roadmap` executes R02 only.
+- `R02_STATUS = DONE`
+- R02 acceptance criteria are satisfied. The next `Continue roadmap` executes R03 only.
 
 ## R01 — Build/release harness for phone-only development
 
@@ -82,3 +83,37 @@ At R01 completion time:
 - successful workflow run recorded in source: **PASS**.
 
 R01 is complete. Do not redo it unless the harness regresses or the user explicitly requests it.
+
+## R02 — Readable Shader Lab source tree and migration inventory
+
+**Status:** `DONE`
+
+### Implemented
+
+- Confirmed immediate upstream remains `Muhammedahmed18/mpvFlux@f2ed015356a20bb7021e850acc599274a5f91450`; no newer upstream source needed integration.
+- Inventoried legacy `ShaderLabRuntime.kt`, `ShaderLabBridge.kt`, `ShaderLabStateBus.kt`, eight Base64 workstation payload chunks, Lua controller, configs, shader template/runtime files, diagnostics, and legacy docs.
+- Reconstructed the legacy workstation only after verifying payload SHA-256 `e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6`.
+- Normalized 11 readable files into `app/src/main/assets/mpvlab/source/` under `config/`, `scripts/`, `shaders/`, `docs/`, and `misc/`.
+- Preserved the original v6.1.1 `/storage/emulated/0/mpv` paths rather than the old Kotlin private-directory rewrite because R03 owns canonical workspace implementation.
+- Added `engine-manifest.json` with engine version `6.1.1-source-normalized-1`, schema version `1`, catalog version `legacy-v6.1.1`, entrypoints, required mpv options, payload provenance, file sizes, and SHA-256 hashes.
+- Added `tools/verify_mpvlab_manifest.py` and `docs/R02_SHADER_LAB_MIGRATION_INVENTORY.md`.
+- Documented the old Kotlin native-state publisher/apply scheduler as behavior to reimplement cleanly later; it is not silently text-injected into normalized Lua.
+- Removed the temporary extraction workflow after use. The legacy branch itself was not modified.
+
+### Relevant commits
+
+- `62b2b721c14d9e73dfc79176ba66e56ab5b8f491` — manifest verification tool.
+- `dd001cf022519cf4fe6e20a5310e6c76ba053fba` — one-shot extraction bootstrap.
+- `ff9e808770120075838379ff16f07bdb31865c11` — extracted/normalized readable v6.1.1 engine source and migration inventory.
+- `516728c3e78d13f203246ae86a634c86d01639ed` — removed temporary extraction workflow; clean validation target.
+
+### Validation
+
+- Legacy payload SHA-256 verification: **PASS**.
+- Normalized manifest verification (`python3 tools/verify_mpvlab_manifest.py`): **PASS**.
+- Human-readable Lua/GLSL/config source review: **PASS**.
+- GitHub Actions build: **PASS** — `Refactor Dev APK` run #23 (`32387282949`), job `Signed phone-test APKs` (`96484949926`).
+- Arm64 artifact ID `9413531715`, digest `sha256:c2eee0ac7c77a3fd6f47ab870ccbd5d8c3f8cd806fb2789bec5beb9a0a54036c`.
+- Universal artifact ID `9413532666`, digest `sha256:c11828a729b0a59c0b4ee255079c35548c489bb871d409da828a74688c7a0664`.
+
+R02 is complete. The next roadmap step is R03; do not wire the assets into playback before the workspace manager is implemented.
