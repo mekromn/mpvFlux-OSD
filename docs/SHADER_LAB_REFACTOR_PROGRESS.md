@@ -8,7 +8,9 @@ It exists so partial or blocked roadmap steps are preserved without losing the d
 - `CURRENT_STEP = R03`
 - `R01_STATUS = DONE`
 - `R02_STATUS = DONE`
-- R02 acceptance criteria are satisfied. The next `Continue roadmap` executes R03 only.
+- `R03_STATUS = BLOCKED`
+- R03 implementation and unit tests are complete. The current blocker is phone-test APK signing: the fork does not yet have the required persistent GitHub Actions signing secrets, so the updateable Chrovelo Debug APK cannot be produced for the required Pixel device smoke test.
+- The next `Continue roadmap` must resolve and validate R03; do not advance to R04 until the signed APK and Pixel workspace smoke test pass.
 
 ## R01 — Build/release harness for phone-only development
 
@@ -117,3 +119,54 @@ R01 is complete. Do not redo it unless the harness regresses or the user explici
 - Universal artifact ID `9413532666`, digest `sha256:c11828a729b0a59c0b4ee255079c35548c489bb871d409da828a74688c7a0664`.
 
 R02 is complete. The next roadmap step is R03; do not wire the assets into playback before the workspace manager is implemented.
+
+## R03 — Canonical `/storage/emulated/0/mpv` workspace manager
+
+**Status:** `BLOCKED`
+
+### Implemented
+
+- Added `ShaderLabWorkspacePaths` with canonical root `/storage/emulated/0/mpv` and required `config/`, `scripts/`, `shaders/`, `shaders/runtime/`, `presets/`, `state/`, and `logs/` directories.
+- Added isolated engine metadata at `.mpvlab/engine/` with an engine-version marker path reserved for the R04 installer.
+- Explicitly separated engine-owned roots (`config`, `scripts`, `shaders`, `.mpvlab/engine`) from user-owned roots (`presets`, `state`).
+- Added `ShaderLabWorkspaceManager` with observable `StateFlow` states: unchecked, available, permission required, unavailable, and failure.
+- Reused the standard build's existing Android 11+ `MANAGE_EXTERNAL_STORAGE` strategy. Android 11+ without all-files access returns an actionable permission-required state; scoped-only builds return an explicit unavailable state.
+- Added an app-specific All Files Access settings intent with fallback to the system-wide All Files Access settings page.
+- Added non-destructive directory initialization and a self-deleting read/write probe under `.mpvlab/engine`; permission denial does not create files and there is no app-private fallback.
+- Registered the workspace manager in Koin and initialized it asynchronously on app startup, surfacing access/failure state through the service and logs rather than mixing policy into UI code.
+- Added JUnit tests for exact canonical paths, directory creation, preset/state preservation, non-destructive permission denial, and engine/user ownership separation.
+- Updated the development workflow to run `:app:testStandardDebugUnitTest` before signing/building the phone APK.
+- Synchronized the refactor branch with current fork `master` through merge commit `e60f745a0b153935e09169fe14225865fb92f73e`; branch is now 0 behind master and PR #1 is mergeable.
+
+### Relevant commits
+
+- `0ab0c2b4ba026829666ad834eb10aad588ebc55f` — canonical workspace path/state model.
+- `26c5a5139368820e8ffc8ee0d0f590986d7a3638` — workspace manager/access policy/read-write probe.
+- `24f8977248cb197ad6444ae40c5edc002a9bf8cf` — Koin workspace service registration.
+- `dc0f0d5a4b1d1e04b95d00826f8489c7a75b2c21` — workspace preservation/path tests.
+- `00eb41a3245324c2b079c612c367970e36727c4d` — non-blocking app-start initialization.
+- `c8289fe74a7446ddf2a18253e54c6b3609081b59` — JUnit test dependency.
+- `9400a6007f469dfb8d296d0d34e17919c73a48df` — run workspace tests before signed phone build.
+- `e60f745a0b153935e09169fe14225865fb92f73e` — synchronize current master history before validation without changing the R03 tree.
+
+### Validation
+
+- Immediate upstream check: **PASS** — `Muhammedahmed18/mpvFlux` remains `f2ed015356a20bb7021e850acc599274a5f91450`; no newer upstream source requires integration.
+- Branch/master synchronization: **PASS** — branch is 0 commits behind `master`; PR #1 reports mergeable.
+- R03 unit tests: **PASS** — `Refactor Dev APK` run #49 (`32393525180`), job `Updateable Chrovelo Debug APKs` (`96504970785`), step `Run Shader Lab workspace unit tests`; Gradle reported `BUILD SUCCESSFUL`, 33 actionable tasks executed.
+- Persistent signing prerequisite: **BLOCKED** — the same run failed at `Prepare persistent signing identity` because `SIGNING_KEYSTORE`, `SIGNING_KEY_ALIAS`, `SIGNING_STORE_PASSWORD`, and `KEY_PASSWORD` are empty/not configured in this fork. The workflow intentionally does not fall back to a disposable runner debug key.
+- Updateable Chrovelo Debug APK: **NOT PRODUCED** because persistent signing is not configured.
+- Pixel 9 Pro XL canonical-workspace smoke test: **BLOCKED** until the persistent signing secrets are configured and the resulting arm64 Chrovelo Debug APK is installed.
+
+### Blocker resolution
+
+Configure one persistent Android signing identity in GitHub Actions repository secrets using these exact names:
+
+- `SIGNING_KEYSTORE` — Base64-encoded keystore bytes.
+- `SIGNING_KEY_ALIAS` — alias inside that keystore.
+- `SIGNING_STORE_PASSWORD` — keystore password.
+- `KEY_PASSWORD` — key password.
+
+After those secrets exist, rerun `Refactor Dev APK`, verify package `io.github.mekromn.chrovelo.debug`, increasing versionCode and stable signer certificate, install the arm64 APK on the Pixel 9 Pro XL, grant All Files Access if requested, and confirm the canonical workspace is created/readable/writable without modifying existing `presets/` or `state/` data.
+
+R03 is not complete and `CURRENT_STEP` remains R03. Do not start R04 until this blocker and device smoke test are resolved.
