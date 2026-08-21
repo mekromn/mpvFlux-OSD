@@ -126,7 +126,7 @@ Status values: `DONE`, `TODO`, `IN_PROGRESS`, `BLOCKED`, `SKIPPED`.
 
 ### Current pointer
 
-`CURRENT_STEP = R07`
+`CURRENT_STEP = R08`
 
 ---
 
@@ -285,7 +285,7 @@ Normal CI: run #27 / `32409643876` — **PASS**.
 
 ## R07 — Refactor MPV bridge and observable state transport
 
-**Status:** `BLOCKED`
+**Status:** `DONE`
 
 **Goal:** replace UI polling with an observable, typed bridge to mpv/Lua state.
 
@@ -297,7 +297,7 @@ Normal CI: run #27 / `32409643876` — **PASS**.
 - Added event-driven Lua publication of readiness/version, source eligibility, bank, bypass, preview, shader slot/swaps, apply-busy, errors, all value controls, and user-preset occupancy.
 - Added canonical controller activation: reconcile the R04 engine, reuse an existing native-state publisher when present, otherwise explicitly `load-script` `/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua`, then request the handshake.
 - Added visible round-trip proof file `/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt`.
-- Engine version advanced to `6.1.1-source-r07-state-1` with manifest/hash verification.
+- Engine version advanced through `6.1.1-source-r07-state-3` with manifest/hash verification; State-3 adds the Pixel-proven top-level `user-data` compatibility path while preserving direct nested-property observation when available.
 - No fixed/infinite 200 ms UI polling loop was introduced.
 - R08 coalescing/debounce/rollback behavior was deliberately not implemented.
 
@@ -305,7 +305,10 @@ Normal CI: run #27 / `32409643876` — **PASS**.
 
 - `67cf5a49fb03d206879bba75572969c0086d147a` — event-driven Lua/native-state wiring.
 - `ce39417e45e01ca5d198a84b8bd4cc0470f88272` — canonical controller activation; guarded full unit suite passed before commit.
-- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only final validation trigger.
+- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only original validation trigger.
+- `74371e19ca5efafefe1e85c202df429631b2080d` — State-2 device transport discriminator proving Lua write/readback plus top-level `user-data` visibility.
+- `344abbcb101a982ca3fceec10d7b562879369b99` — State-3 bridge compatibility repair: consume/observe the top-level `user-data` JSON map when the Android MPVLib wrapper does not expose the nested multiline leaf as a string.
+- `fb1e70b430476ab6a1255946c77e562217248ff2` — final State-3 signed-build/documentation trigger.
 
 **Acceptance criteria:**
 
@@ -313,7 +316,7 @@ Normal CI: run #27 / `32409643876` — **PASS**.
 - External MPV-property changes update typed state immediately through property observation: **PASS** in fake-transport tests.
 - Backend/transport/engine-preparation errors surface as observable typed state: **PASS**.
 - Canonical controller is available without requiring the R04 reference `config/mpv.conf` to become the active root config: **PASS** in guarded activation tests.
-- Real-device Lua -> mpv property -> Android observer synchronization: **PENDING**.
+- Real-device Lua -> mpv property -> Android observer synchronization: **PASS** — Pixel 9 Pro XL / Android 16, State-3 root fallback, 2026-08-21 UTC.
 
 **Automated validation:**
 
@@ -332,7 +335,33 @@ Normal CI: run #27 / `32409643876` — **PASS**.
   - Gradle build: **PASS**.
   - arm64, armeabi-v7a, universal, x86, and x86_64 uploads: **PASS**.
 
-**Remaining validation:** Pixel 9 Pro XL / Android 16 synchronization smoke. Install the verified arm64 Debug APK over the current Debug install, start an SDR video, and confirm `/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt` reports `status=PASS`, backend `6.1.1-r07-state-1`, a positive serial, 53 controls, active source classification, and no backend error. Do not advance to R08 until this passes.
+**Final State-3 validation:**
+
+- `Refactor Dev APK` run #159 / run ID `32443773015`, job `96659445388`: **PASS**.
+  - full unit tests: **PASS**.
+  - signed Debug build: **PASS**.
+  - package/version/signing certificate verification: **PASS**.
+  - arm64 versionCode `1787283192`.
+  - arm64 artifact `9433417733`.
+  - persistent signer SHA-256 remains `b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2`.
+- `CI/CD Build` run #75 / run ID `32443773021`, job `96659489167`: **PASS**.
+- Pixel 9 Pro XL / Android 16 real-device synchronization smoke: **PASS**.
+  - `status=PASS`
+  - `stage=snapshot_received`
+  - `backend_version=6.1.1-r07-state-3`
+  - `snapshot_serial=2`
+  - `source_gamma=bt.1886`
+  - `source_kind=SDR`
+  - `sdr_eligible=true`
+  - `active_bank=B`
+  - `shader_slot=A`
+  - `shader_swaps=0`
+  - `apply_busy=false`
+  - `control_count=53`
+  - `user_preset_count=0`
+  - `last_error=`
+
+**R07 COMPLETE.** The next roadmap pointer is R08; R08 implementation is intentionally not part of this closeout turn.
 
 ---
 

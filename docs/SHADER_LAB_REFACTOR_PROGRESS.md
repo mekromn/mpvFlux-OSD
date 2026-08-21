@@ -4,17 +4,18 @@ This file is the execution/status companion to `SHADER_LAB_REFACTOR_ROADMAP.md` 
 
 ## Current execution state
 
-- `CURRENT_STEP = R07`
+- `CURRENT_STEP = R08`
 - `R01_STATUS = DONE`
 - `R02_STATUS = DONE`
 - `R03_STATUS = DONE`
 - `R04_STATUS = DONE`
 - `R05_STATUS = DONE`
 - `R06_STATUS = DONE`
-- `R07_STATUS = BLOCKED`
-- R07 implementation and automated validation are complete.
-- The only remaining R07 acceptance gate is the real-device Pixel synchronization smoke test using the verified arm64 APK from `Refactor Dev APK` run #115.
-- Do **not** begin R08 until the Pixel smoke confirms the Lua -> mpv property -> Android observer -> typed state round trip.
+- `R07_STATUS = DONE`
+- `R08_STATUS = TODO`
+- R07 closed on a real Pixel 9 Pro XL / Android 16 synchronization smoke using State-3.
+- The device produced a typed 53-control snapshot with `status=PASS`, backend `6.1.1-r07-state-3`, positive serial, SDR classification, and no backend error.
+- R08 is the next executable roadmap step; no R08 implementation was included in the R07 closeout turn.
 
 ## Verified repository baseline at R06 completion
 
@@ -177,21 +178,22 @@ Normal CI/CD:
 
 ## R07 — Refactor MPV bridge and observable state transport
 
-**Status:** `BLOCKED`
+**Status:** `DONE`
 
 ### Implemented
 
 - Added `MpvShaderLabBridge` as the concrete `ShaderLabCommandBackend` for R06.
 - Added typed `StateFlow<ShaderLabBackendState>` and typed bridge events.
 - Uses native MPV property observation for:
-  - `user-data/p9lab/native-state`;
+  - `user-data/p9lab/native-state` when the wrapper exposes the nested leaf;
+  - top-level `user-data` as the Pixel-proven compatibility path for the same native-state envelope;
   - `video-params/gamma`;
   - all six live MPV-property Shader Lab controls.
 - No infinite 200 ms UI polling loop exists in the new bridge.
 - Added event-driven Lua state publication for readiness/version, source classification, bank, bypass, preview, shader slot/swaps, apply-busy, errors, all value controls, and user-preset occupancy.
 - Added typed semantic command routing through `p9lab-native-*` Lua messages.
 - Added visible device round-trip proof file: `/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt`.
-- R04 engine version advanced to `6.1.1-source-r07-state-1` and manifest integrity remains verified.
+- R04 engine version advanced through `6.1.1-source-r07-state-3` and manifest integrity remains verified.
 - Added canonical controller activation: bridge initialization reconciles the R04 engine, reuses an existing native-state publisher when present, otherwise explicitly loads `/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua` and requests the state handshake.
 - Engine-preparation/transport/backend failures surface through observable typed error state.
 - R08 shader coalescing/debounce/rollback behavior was **not** implemented.
@@ -201,7 +203,10 @@ Normal CI/CD:
 - bridge + fake transport/tests groundwork: earlier R07 commits on `agent/upstream-refactor`.
 - `67cf5a49fb03d206879bba75572969c0086d147a` — event-driven native state transport + Lua wiring.
 - `ce39417e45e01ca5d198a84b8bd4cc0470f88272` — ensure canonical controller activation; guarded full unit suite **PASS** before commit.
-- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only final validation trigger; exact code remains `ce39417e...`.
+- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only original validation trigger.
+- `74371e19ca5efafefe1e85c202df429631b2080d` — State-2 user-data transport discriminator.
+- `344abbcb101a982ca3fceec10d7b562879369b99` — State-3 top-level `user-data` compatibility repair; guarded manifest/full-unit validation **PASS**.
+- `fb1e70b430476ab6a1255946c77e562217248ff2` — final State-3 signed-build/documentation trigger.
 
 ### R07 automated validation
 
@@ -240,27 +245,76 @@ Normal CI/CD:
 - Gradle build: **PASS**.
 - arm64/armeabi-v7a/universal/x86/x86_64 uploads: **PASS**.
 
-### R07 remaining acceptance gate
+### R07 State-2 diagnosis
 
-Real Pixel 9 Pro XL / Android 16 synchronization smoke test is still required.
+The Pixel State-2 discriminator proved all of the following:
 
-Install the verified arm64 APK **over the existing Chrovelo Debug**; do not uninstall first. Start playback of a normal SDR video and then inspect:
+- the managed R07 Lua controller executed (`script=R07_STATE_2`);
+- Lua successfully wrote and immediately read back `user-data/p9lab/lua-probe`;
+- Android could read the tiny probe;
+- Android could also read the top-level `user-data` map, and that JSON already contained the complete multiline `p9lab/native-state` envelope;
+- direct Android `getPropertyString("user-data/p9lab/native-state")` still returned no snapshot.
 
-`/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt`
+That isolated the failure to nested multiline leaf-string exposure in the embedded Android MPVLib wrapper, not Lua activation, Lua user-data writes, the payload, or Android access to user-data generally.
 
-A healthy round trip should report at minimum:
+### R07 State-3 repair and automated validation
 
-- `status=PASS`
-- `backend_version=6.1.1-r07-state-1`
-- positive `snapshot_serial`
-- source classification fields showing the active source
-- `control_count=53`
-- no backend error text
+State-3 keeps direct nested-property consumption when available and adds top-level `user-data` observation/readback plus native-state JSON extraction as the compatibility path. The temporary Lua probe was removed after diagnosis.
 
-Successful update-in-place + playback + valid sync proof closes R07. If the proof file is missing or reports an error, diagnose R07 and do not move to R08.
+- State-3 repair commit: `344abbcb101a982ca3fceec10d7b562879369b99`.
+- Engine version: `6.1.1-source-r07-state-3`.
+- Backend version: `6.1.1-r07-state-3`.
+- Guarded manifest integrity: **PASS**.
+- Guarded full `:app:testStandardDebugUnitTest`: **PASS**.
+- `Refactor Dev APK` run #159 / run ID `32443773015`, job `96659445388`: **PASS**.
+  - PR merge-test SHA: `5f5d4db378ca06b0938bd28fb54e8af33b5fb9fc`.
+  - unit tests: **PASS**.
+  - signed Debug build: **PASS**.
+  - package/version/signing verification: **PASS**.
+  - arm64 versionCode: `1787283192`.
+  - arm64 artifact ID: `9433417733`.
+  - signer SHA-256: `b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2`.
+- `CI/CD Build` run #75 / run ID `32443773021`, job `96659489167`: **PASS**.
 
-**R07 remains BLOCKED only on this device smoke test.**
+### R07 final Pixel acceptance
+
+Pixel 9 Pro XL / Android 16 device smoke on the State-3 signed arm64 APK: **PASS**.
+
+`/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt` reported:
+
+```text
+status=PASS
+stage=snapshot_received
+backend_version=6.1.1-r07-state-3
+snapshot_serial=2
+source_gamma=bt.1886
+source_kind=SDR
+sdr_eligible=true
+active_bank=B
+bypassed=false
+preview_original=false
+shader_slot=A
+shader_swaps=0
+apply_busy=false
+control_count=53
+user_preset_count=0
+last_error=
+```
+
+Acceptance result:
+
+- Lua controller activation: **PASS**.
+- Lua -> mpv user-data publication: **PASS**.
+- Android bridge state consumption: **PASS** through the State-3 compatibility path.
+- Typed snapshot decode: **PASS**.
+- SDR source classification: **PASS**.
+- 53-control catalog synchronization: **PASS**.
+- backend error field: **CLEAR**.
+
+**R07 COMPLETE.**
 
 ## Next step
 
-R08 is **not active yet**. Once the R07 Pixel synchronization smoke passes, formally mark R07 `DONE`, advance `CURRENT_STEP` to `R08`, record the device result, and stop. Do not implement R08 in the same completion turn.
+`CURRENT_STEP = R08` — **Deterministic shader generation and atomic live-apply pipeline**.
+
+R08 is now the next executable step, but it was intentionally **not implemented in this R07 closeout turn**.
