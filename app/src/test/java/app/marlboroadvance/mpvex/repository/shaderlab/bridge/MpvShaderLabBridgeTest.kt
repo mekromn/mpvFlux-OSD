@@ -245,7 +245,7 @@ class MpvShaderLabBridgeTest {
     assertTrue(
       transport.commands.any {
         it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY &&
-          it.getOrNull(2)?.contains("LUMA_CONTRAST=0.45600000000000002") == true
+          it.getOrNull(2)?.contains("LUMA_CONTRAST=0.45600000000000000") == true
       },
     )
   }
