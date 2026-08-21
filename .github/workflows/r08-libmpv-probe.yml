@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: r08-libmpv-proof
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-arm64:
@@ -43,7 +43,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf meson python3-pip nasm yasm
+          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm
+          # Ubuntu's runner image currently ships Meson 1.3.x, while the
+          # dependency set fetched by this pinned harness now includes
+          # fontconfig requiring Meson >= 1.6.1. Pin a modern user-local Meson
+          # and expose it to all following Actions steps.
+          python3 -m pip install --user --upgrade 'meson>=1.6.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/meson" --version
 
       - name: Fetch pinned mpv-android build harness
         if: steps.trigger.outputs.enabled == 'yes'
@@ -76,8 +83,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # 0d655fe consumes bstr-named uniform helpers introduced by 91ceffce.
-          # Backport that prerequisite first so the clean textual cherry-pick
-          # is also source-compatible with the d54bad563 renderer baseline.
           git cherry-pick 91ceffce42534a45705617036b6b2a392a32fc57
           git cherry-pick 0d655fe66590009e1d77a17581257d677286531a
 
@@ -125,7 +130,7 @@ jobs:
           set +e
           mkdir -p r08-native-failure
           cp /tmp/r08-native-build.log r08-native-failure/native-build.log 2>/dev/null || true
-          find native/mpv-android -type f \( -name 'meson-log.txt' -o -name 'meson-logs.txt' \) -print | while read -r log; do
+          find native/mpv-android -type f -name 'meson-log.txt' -print | while read -r log; do
             dest="r08-native-failure/${log#native/mpv-android/}"
             mkdir -p "$(dirname "$dest")"
             cp "$log" "$dest"
