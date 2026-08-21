@@ -25,6 +25,7 @@ MPV_BASE_SHA=d54bad5636924ab3f39cb6e397b94b6aa8a7c433
 MPV_PARAM_HELPER_SHA=91ceffce42534a45705617036b6b2a392a32fc57
 MPV_PARAM_SHA=0d655fe66590009e1d77a17581257d677286531a
 FFMPEG_SHA=5ba2525c7affc29cbd99e6266946b382d3fffe8b
+FFMPEG_DESCRIBE=N-122998-g5ba2525c7a
 LIBPLACEBO_SHA=c93aa134ab62365ce1177efff99b8e1e66a818e7
 LIBPLACEBO_TAG=v7.360.0
 LIBPLACEBO_DESCRIBE=v7.360.0-3-gc93aa134
@@ -60,12 +61,17 @@ p.write_text(s)
 PY
 
 # Pre-create the exact FFmpeg tree so the harness cannot substitute another tag
-# or floating HEAD. The accepted R07 binary proves that this source was built
-# without the later force_mpegts source patch.
+# or floating HEAD. FFmpeg's version generator requires the full commit/tag
+# graph to reproduce the accepted R07 N-122998-g5ba2525c7a identity; shallow
+# clones deliberately fall back to a git-YYYY-MM-DD-hash version string.
 r08_phase ffmpeg_pin
-git clone --filter=blob:none --no-checkout --shallow-since='2026-02-20T00:00:00Z' \
+git clone --filter=blob:none --no-checkout --single-branch --branch master \
   https://github.com/FFmpeg/FFmpeg.git deps/ffmpeg
 git -C deps/ffmpeg checkout --detach "$FFMPEG_SHA"
+test "$(git -C deps/ffmpeg rev-parse HEAD)" = "$FFMPEG_SHA"
+actual_ffmpeg_describe="$(git -C deps/ffmpeg describe --tags --match N)"
+echo "ffmpeg_describe_actual=$actual_ffmpeg_describe"
+test "$actual_ffmpeg_describe" = "$FFMPEG_DESCRIBE"
 
 r08_phase harness_download
 ./download.sh
@@ -291,7 +297,7 @@ for name in libmpv.so libavcodec.so libavdevice.so libavfilter.so libavformat.so
 done
 
 # Exact renderer/source fingerprints recovered from the accepted R07 APK.
-strings "$LIB" | grep -F 'N-122998-g5ba2525c7a'
+strings "$LIB" | grep -F "$FFMPEG_DESCRIBE"
 strings "$LIB" | grep -F 'v7.360.0 (v7.360.0-3-gc93aa134)'
 strings "$LIB" | grep -F -- '-Diconv=disabled -Dlua=enabled -Dvulkan=enabled -Dlibmpv=true -Dcplayer=false -Dmanpage-build=disabled -Ddefault_library=shared'
 strings "$LIB" | grep -F 'pl_vulkan_create'
@@ -348,6 +354,7 @@ done
     echo "mpv_param_helper=$MPV_PARAM_HELPER_SHA"
     echo "mpv_param=$MPV_PARAM_SHA"
     echo "ffmpeg=$FFMPEG_SHA"
+    echo "ffmpeg_describe=$FFMPEG_DESCRIBE"
     echo "libplacebo=$LIBPLACEBO_SHA"
     echo "libplacebo_describe=$LIBPLACEBO_DESCRIBE"
     echo "ndk=$R07_NDK_TAG"
