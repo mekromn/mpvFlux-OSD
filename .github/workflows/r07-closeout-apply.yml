@@ -1,0 +1,131 @@
+name: R07 Closeout Apply
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  closeout:
+    if: github.event.pull_request.head.ref == 'agent/upstream-refactor'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/upstream-refactor
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check closeout trigger
+        id: trigger
+        shell: bash
+        run: |
+          if [[ -f .github/R07_CLOSEOUT_TRIGGER ]]; then
+            echo 'enabled=yes' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=no' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Record verified R07 completion
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one guarded match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          roadmap = Path('docs/SHADER_LAB_REFACTOR_ROADMAP.md')
+          progress = Path('docs/SHADER_LAB_REFACTOR_PROGRESS.md')
+
+          replace_once(roadmap, '`CURRENT_STEP = R07`', '`CURRENT_STEP = R08`')
+          replace_once(
+              roadmap,
+              '## R07 — Refactor MPV bridge and observable state transport\n\n**Status:** `BLOCKED`',
+              '## R07 — Refactor MPV bridge and observable state transport\n\n**Status:** `DONE`',
+          )
+          replace_once(
+              roadmap,
+              '- Engine version advanced to `6.1.1-source-r07-state-1` with manifest/hash verification.',
+              '- Engine version advanced through `6.1.1-source-r07-state-3` with manifest/hash verification; State-3 adds the Pixel-proven top-level `user-data` compatibility path while preserving direct nested-property observation when available.',
+          )
+          replace_once(
+              roadmap,
+              '- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only final validation trigger.',
+              '- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only original validation trigger.\n- `74371e19ca5efafefe1e85c202df429631b2080d` — State-2 device transport discriminator proving Lua write/readback plus top-level `user-data` visibility.\n- `344abbcb101a982ca3fceec10d7b562879369b99` — State-3 bridge compatibility repair: consume/observe the top-level `user-data` JSON map when the Android MPVLib wrapper does not expose the nested multiline leaf as a string.\n- `fb1e70b430476ab6a1255946c77e562217248ff2` — final State-3 signed-build/documentation trigger.',
+          )
+          replace_once(
+              roadmap,
+              '- Real-device Lua -> mpv property -> Android observer synchronization: **PENDING**.',
+              '- Real-device Lua -> mpv property -> Android observer synchronization: **PASS** — Pixel 9 Pro XL / Android 16, State-3 root fallback, 2026-08-21 UTC.',
+          )
+          replace_once(
+              roadmap,
+              '**Remaining validation:** Pixel 9 Pro XL / Android 16 synchronization smoke. Install the verified arm64 Debug APK over the current Debug install, start an SDR video, and confirm `/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt` reports `status=PASS`, backend `6.1.1-r07-state-1`, a positive serial, 53 controls, active source classification, and no backend error. Do not advance to R08 until this passes.',
+              '''**Final State-3 validation:**\n\n- `Refactor Dev APK` run #159 / run ID `32443773015`, job `96659445388`: **PASS**.\n  - full unit tests: **PASS**.\n  - signed Debug build: **PASS**.\n  - package/version/signing certificate verification: **PASS**.\n  - arm64 versionCode `1787283192`.\n  - arm64 artifact `9433417733`.\n  - persistent signer SHA-256 remains `b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2`.\n- `CI/CD Build` run #75 / run ID `32443773021`, job `96659489167`: **PASS**.\n- Pixel 9 Pro XL / Android 16 real-device synchronization smoke: **PASS**.\n  - `status=PASS`\n  - `stage=snapshot_received`\n  - `backend_version=6.1.1-r07-state-3`\n  - `snapshot_serial=2`\n  - `source_gamma=bt.1886`\n  - `source_kind=SDR`\n  - `sdr_eligible=true`\n  - `active_bank=B`\n  - `shader_slot=A`\n  - `shader_swaps=0`\n  - `apply_busy=false`\n  - `control_count=53`\n  - `user_preset_count=0`\n  - `last_error=`\n\n**R07 COMPLETE.** The next roadmap pointer is R08; R08 implementation is intentionally not part of this closeout turn.''',
+          )
+
+          replace_once(
+              progress,
+              '''- `CURRENT_STEP = R07`\n- `R01_STATUS = DONE`\n- `R02_STATUS = DONE`\n- `R03_STATUS = DONE`\n- `R04_STATUS = DONE`\n- `R05_STATUS = DONE`\n- `R06_STATUS = DONE`\n- `R07_STATUS = BLOCKED`\n- R07 implementation and automated validation are complete.\n- The only remaining R07 acceptance gate is the real-device Pixel synchronization smoke test using the verified arm64 APK from `Refactor Dev APK` run #115.\n- Do **not** begin R08 until the Pixel smoke confirms the Lua -> mpv property -> Android observer -> typed state round trip.''',
+              '''- `CURRENT_STEP = R08`\n- `R01_STATUS = DONE`\n- `R02_STATUS = DONE`\n- `R03_STATUS = DONE`\n- `R04_STATUS = DONE`\n- `R05_STATUS = DONE`\n- `R06_STATUS = DONE`\n- `R07_STATUS = DONE`\n- `R08_STATUS = TODO`\n- R07 closed on a real Pixel 9 Pro XL / Android 16 synchronization smoke using State-3.\n- The device produced a typed 53-control snapshot with `status=PASS`, backend `6.1.1-r07-state-3`, positive serial, SDR classification, and no backend error.\n- R08 is the next executable roadmap step; no R08 implementation was included in the R07 closeout turn.''',
+          )
+          replace_once(
+              progress,
+              '## R07 — Refactor MPV bridge and observable state transport\n\n**Status:** `BLOCKED`',
+              '## R07 — Refactor MPV bridge and observable state transport\n\n**Status:** `DONE`',
+          )
+          replace_once(
+              progress,
+              '''- Uses native MPV property observation for:\n  - `user-data/p9lab/native-state`;\n  - `video-params/gamma`;''',
+              '''- Uses native MPV property observation for:\n  - `user-data/p9lab/native-state` when the wrapper exposes the nested leaf;\n  - top-level `user-data` as the Pixel-proven compatibility path for the same native-state envelope;\n  - `video-params/gamma`;''',
+          )
+          replace_once(
+              progress,
+              '- R04 engine version advanced to `6.1.1-source-r07-state-1` and manifest integrity remains verified.',
+              '- R04 engine version advanced through `6.1.1-source-r07-state-3` and manifest integrity remains verified.',
+          )
+          replace_once(
+              progress,
+              '- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only final validation trigger; exact code remains `ce39417e...`.',
+              '- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only original validation trigger.\n- `74371e19ca5efafefe1e85c202df429631b2080d` — State-2 user-data transport discriminator.\n- `344abbcb101a982ca3fceec10d7b562879369b99` — State-3 top-level `user-data` compatibility repair; guarded manifest/full-unit validation **PASS**.\n- `fb1e70b430476ab6a1255946c77e562217248ff2` — final State-3 signed-build/documentation trigger.',
+          )
+          old_tail = '''### R07 remaining acceptance gate\n\nReal Pixel 9 Pro XL / Android 16 synchronization smoke test is still required.\n\nInstall the verified arm64 APK **over the existing Chrovelo Debug**; do not uninstall first. Start playback of a normal SDR video and then inspect:\n\n`/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt`\n\nA healthy round trip should report at minimum:\n\n- `status=PASS`\n- `backend_version=6.1.1-r07-state-1`\n- positive `snapshot_serial`\n- source classification fields showing the active source\n- `control_count=53`\n- no backend error text\n\nSuccessful update-in-place + playback + valid sync proof closes R07. If the proof file is missing or reports an error, diagnose R07 and do not move to R08.\n\n**R07 remains BLOCKED only on this device smoke test.**\n\n## Next step\n\nR08 is **not active yet**. Once the R07 Pixel synchronization smoke passes, formally mark R07 `DONE`, advance `CURRENT_STEP` to `R08`, record the device result, and stop. Do not implement R08 in the same completion turn.'''
+          new_tail = '''### R07 State-2 diagnosis\n\nThe Pixel State-2 discriminator proved all of the following:\n\n- the managed R07 Lua controller executed (`script=R07_STATE_2`);\n- Lua successfully wrote and immediately read back `user-data/p9lab/lua-probe`;\n- Android could read the tiny probe;\n- Android could also read the top-level `user-data` map, and that JSON already contained the complete multiline `p9lab/native-state` envelope;\n- direct Android `getPropertyString("user-data/p9lab/native-state")` still returned no snapshot.\n\nThat isolated the failure to nested multiline leaf-string exposure in the embedded Android MPVLib wrapper, not Lua activation, Lua user-data writes, the payload, or Android access to user-data generally.\n\n### R07 State-3 repair and automated validation\n\nState-3 keeps direct nested-property consumption when available and adds top-level `user-data` observation/readback plus native-state JSON extraction as the compatibility path. The temporary Lua probe was removed after diagnosis.\n\n- State-3 repair commit: `344abbcb101a982ca3fceec10d7b562879369b99`.\n- Engine version: `6.1.1-source-r07-state-3`.\n- Backend version: `6.1.1-r07-state-3`.\n- Guarded manifest integrity: **PASS**.\n- Guarded full `:app:testStandardDebugUnitTest`: **PASS**.\n- `Refactor Dev APK` run #159 / run ID `32443773015`, job `96659445388`: **PASS**.\n  - PR merge-test SHA: `5f5d4db378ca06b0938bd28fb54e8af33b5fb9fc`.\n  - unit tests: **PASS**.\n  - signed Debug build: **PASS**.\n  - package/version/signing verification: **PASS**.\n  - arm64 versionCode: `1787283192`.\n  - arm64 artifact ID: `9433417733`.\n  - signer SHA-256: `b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2`.\n- `CI/CD Build` run #75 / run ID `32443773021`, job `96659489167`: **PASS**.\n\n### R07 final Pixel acceptance\n\nPixel 9 Pro XL / Android 16 device smoke on the State-3 signed arm64 APK: **PASS**.\n\n`/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt` reported:\n\n```text\nstatus=PASS\nstage=snapshot_received\nbackend_version=6.1.1-r07-state-3\nsnapshot_serial=2\nsource_gamma=bt.1886\nsource_kind=SDR\nsdr_eligible=true\nactive_bank=B\nbypassed=false\npreview_original=false\nshader_slot=A\nshader_swaps=0\napply_busy=false\ncontrol_count=53\nuser_preset_count=0\nlast_error=\n```\n\nAcceptance result:\n\n- Lua controller activation: **PASS**.\n- Lua -> mpv user-data publication: **PASS**.\n- Android bridge state consumption: **PASS** through the State-3 compatibility path.\n- Typed snapshot decode: **PASS**.\n- SDR source classification: **PASS**.\n- 53-control catalog synchronization: **PASS**.\n- backend error field: **CLEAR**.\n\n**R07 COMPLETE.**\n\n## Next step\n\n`CURRENT_STEP = R08` — **Deterministic shader generation and atomic live-apply pipeline**.\n\nR08 is now the next executable step, but it was intentionally **not implemented in this R07 closeout turn**.'''
+          replace_once(progress, old_tail, new_tail)
+          PY
+
+      - name: Validate closeout docs
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq '`CURRENT_STEP = R08`' docs/SHADER_LAB_REFACTOR_ROADMAP.md
+          grep -Fq '## R07 — Refactor MPV bridge and observable state transport' docs/SHADER_LAB_REFACTOR_ROADMAP.md
+          grep -Fq '**R07 COMPLETE.**' docs/SHADER_LAB_REFACTOR_ROADMAP.md
+          grep -Fq '`CURRENT_STEP = R08`' docs/SHADER_LAB_REFACTOR_PROGRESS.md
+          grep -Fq '`R07_STATUS = DONE`' docs/SHADER_LAB_REFACTOR_PROGRESS.md
+          grep -Fq 'backend_version=6.1.1-r07-state-3' docs/SHADER_LAB_REFACTOR_PROGRESS.md
+          git diff --check
+
+      - name: Commit R07 closeout docs only
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- docs/SHADER_LAB_REFACTOR_ROADMAP.md docs/SHADER_LAB_REFACTOR_PROGRESS.md
+          git diff --cached --check
+          git commit -m "R07 close Pixel state transport and advance roadmap"
+          git pull --rebase origin agent/upstream-refactor
+          git push origin HEAD:agent/upstream-refactor
