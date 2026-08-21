@@ -1,0 +1,162 @@
+name: R08 Custom libmpv Proof
+
+on:
+  push:
+    branches:
+      - agent/upstream-refactor
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r08-libmpv-proof
+  cancel-in-progress: false
+
+jobs:
+  build-arm64:
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check R08 trigger
+        id: trigger
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || -f .github/R08_LIBMPV_PROBE_TRIGGER ]]; then
+            echo 'enabled=yes' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=no' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install native build dependencies
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf meson python3-pip nasm yasm
+
+      - name: Fetch pinned mpv-android build harness
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Secozzi/mpv-android.git native/mpv-android
+          cd native/mpv-android
+          git checkout fd17fb02cfb8c8b5c12621c2c90769685d635d91
+
+      - name: Fetch dependencies and pin proven mpv renderer baseline
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd native/mpv-android/buildscripts
+          ./download.sh
+          cd deps/mpv
+          git fetch --depth=1 origin d54bad5636924ab3f39cb6e397b94b6aa8a7c433
+          git checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
+          git fetch --depth=1 origin 0d655fe66590009e1d77a17581257d677286531a
+          git cherry-pick 0d655fe66590009e1d77a17581257d677286531a
+
+      - name: Apply Chrovelo narrow native patches
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd native/mpv-android
+          python3 - <<'PY'
+          from pathlib import Path
+
+          header = Path('buildscripts/deps/mpv/video/out/gpu/user_shaders.h')
+          text = header.read_text()
+          old = '#define SHADER_MAX_PARAMS 16'
+          assert text.count(old) == 1, text.count(old)
+          header.write_text(text.replace(old, '#define SHADER_MAX_PARAMS 64', 1))
+
+          buildall = Path('buildscripts/buildall.sh')
+          text = buildall.read_text()
+          old = 'export LDFLAGS="-Wl,-O1,--icf=safe -Wl,-z,max-page-size=16384"'
+          new = 'export LDFLAGS="-Wl,-O1,--icf=safe -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"'
+          assert text.count(old) == 1, text.count(old)
+          buildall.write_text(text.replace(old, new, 1))
+          PY
+          grep -F '#define SHADER_MAX_PARAMS 64' buildscripts/deps/mpv/video/out/gpu/user_shaders.h
+          grep -F -- '-Wl,-z,common-page-size=16384' buildscripts/buildall.sh
+
+      - name: Build arm64 custom libmpv and AAR
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        env:
+          DONT_BUILD_RELEASE: ''
+          GRADLE_OPTS: -Xmx4G
+        run: |
+          set -euo pipefail
+          cd native/mpv-android/buildscripts
+          ./buildall.sh --arch arm64 mpv
+          ./buildall.sh --arch arm64 mpv-android
+
+      - name: Verify native feature and 16 KB ELF alignment
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd native/mpv-android
+          test -f lib/build/outputs/aar/lib-release.aar
+          test -f buildscripts/prefix/arm64/lib/libmpv.so
+          grep -F '#define SHADER_MAX_PARAMS 64' buildscripts/deps/mpv/video/out/gpu/user_shaders.h
+          git -C buildscripts/deps/mpv log -2 --oneline
+          readelf -lW buildscripts/prefix/arm64/lib/libmpv.so | tee /tmp/libmpv-program-headers.txt
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path('/tmp/libmpv-program-headers.txt').read_text()
+          loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
+          assert loads, 'no LOAD segments found'
+          bad = []
+          for line in loads:
+              parts = line.split()
+              align = int(parts[-1], 16)
+              if align < 0x4000:
+                  bad.append(line)
+          assert not bad, 'LOAD segments below 16 KB alignment:\n' + '\n'.join(bad)
+          print('16 KB ELF LOAD alignment PASS')
+          PY
+          sha256sum lib/build/outputs/aar/lib-release.aar buildscripts/prefix/arm64/lib/libmpv.so
+
+      - name: Compile Chrovelo against replacement AAR
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp native/mpv-android/lib/build/outputs/aar/lib-release.aar app/libs/mpv-android-lib-v0.0.1.aar
+          chmod +x ./gradlew
+          ./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --stacktrace
+
+      - name: Package proof artifacts
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r08-proof
+          cp native/mpv-android/lib/build/outputs/aar/lib-release.aar r08-proof/Chrovelo-R08-custom-libmpv-arm64.aar
+          cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so r08-proof/libmpv-arm64.so
+          cp /tmp/libmpv-program-headers.txt r08-proof/libmpv-program-headers.txt
+          git -C native/mpv-android/buildscripts/deps/mpv log -2 --format='%H %s' > r08-proof/mpv-commits.txt
+          sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
+          find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' -print -exec cp {} r08-proof/Chrovelo-R08-custom-libmpv-arm64-debug.apk \; | head -n 1
+          sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
+
+      - name: Upload R08 native proof
+        if: steps.trigger.outputs.enabled == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrovelo-R08-custom-libmpv-proof-${{ github.sha }}
+          path: r08-proof/
+          if-no-files-found: error
+          retention-days: 14
