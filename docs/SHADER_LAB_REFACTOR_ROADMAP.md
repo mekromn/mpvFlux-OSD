@@ -285,15 +285,54 @@ Normal CI: run #27 / `32409643876` — **PASS**.
 
 ## R07 — Refactor MPV bridge and observable state transport
 
-**Status:** `TODO`
+**Status:** `BLOCKED`
 
 **Goal:** replace UI polling with an observable, typed bridge to mpv/Lua state.
 
-**Work:** create `MpvShaderLabBridge`, use MPV property observation where available, publish typed `StateFlow`/events, serialize command entry, normalize Lua↔Android state, expose readiness/source/bypass/preview/slot/apply/error/control/preset/apply-busy state, and use bounded fallback polling only when unavoidable.
+**Completed work:**
 
-**Acceptance criteria:** no infinite 200 ms UI polling; external backend changes appear promptly; backend errors surface as state.
+- Added `MpvShaderLabBridge` as the concrete R06 backend with typed `StateFlow` and typed bridge events.
+- Uses native MPV property observation for the complete Lua state envelope, source gamma, and all six live MPV-property Shader Lab controls.
+- Serializes semantic command entry and maps R06 commands to typed `p9lab-native-*` Lua messages.
+- Added event-driven Lua publication of readiness/version, source eligibility, bank, bypass, preview, shader slot/swaps, apply-busy, errors, all value controls, and user-preset occupancy.
+- Added canonical controller activation: reconcile the R04 engine, reuse an existing native-state publisher when present, otherwise explicitly `load-script` `/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua`, then request the handshake.
+- Added visible round-trip proof file `/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt`.
+- Engine version advanced to `6.1.1-source-r07-state-1` with manifest/hash verification.
+- No fixed/infinite 200 ms UI polling loop was introduced.
+- R08 coalescing/debounce/rollback behavior was deliberately not implemented.
 
-**Validation:** fake-backend tests + device synchronization smoke test.
+**Relevant commits:**
+
+- `67cf5a49fb03d206879bba75572969c0086d147a` — event-driven Lua/native-state wiring.
+- `ce39417e45e01ca5d198a84b8bd4cc0470f88272` — canonical controller activation; guarded full unit suite passed before commit.
+- `a7f98aefb53ae51a27d8bd9f0b2bfc0e0f700570` — documentation-only final validation trigger.
+
+**Acceptance criteria:**
+
+- No infinite 200 ms UI polling: **PASS**.
+- External MPV-property changes update typed state immediately through property observation: **PASS** in fake-transport tests.
+- Backend/transport/engine-preparation errors surface as observable typed state: **PASS**.
+- Canonical controller is available without requiring the R04 reference `config/mpv.conf` to become the active root config: **PASS** in guarded activation tests.
+- Real-device Lua -> mpv property -> Android observer synchronization: **PENDING**.
+
+**Automated validation:**
+
+- Guarded Lua/transport apply + manifest verification + full Shader Lab unit suite: **PASS**.
+- First controller-activation guard caught a Koin type-inference compile failure and prevented the broken patch from committing.
+- Corrected controller-activation guarded workflow run #2: **PASS**.
+- `Refactor Dev APK` run #115 / run ID `32435745934`, job `96636529771`: **PASS**.
+  - PR merge-test SHA: `f5e53f881c5cdc0e7ead521bf568f09e22554421`.
+  - full unit tests: **PASS**.
+  - signed Debug build: **PASS**.
+  - package/version/signing certificate verification: **PASS**.
+  - arm64 versionCode `1787275042`; universal versionCode `1787275040`.
+  - persistent signer SHA-256 remains `b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2`.
+  - arm64 artifact `9430776332`; universal artifact `9430776972`.
+- `CI/CD Build` run #51 / run ID `32435745914`, job `96636527407`: **PASS**.
+  - Gradle build: **PASS**.
+  - arm64, armeabi-v7a, universal, x86, and x86_64 uploads: **PASS**.
+
+**Remaining validation:** Pixel 9 Pro XL / Android 16 synchronization smoke. Install the verified arm64 Debug APK over the current Debug install, start an SDR video, and confirm `/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt` reports `status=PASS`, backend `6.1.1-r07-state-1`, a positive serial, 53 controls, active source classification, and no backend error. Do not advance to R08 until this passes.
 
 ---
 
