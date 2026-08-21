@@ -62,18 +62,23 @@ jobs:
           cd native/mpv-android/buildscripts
           ./download.sh
           cd deps/mpv
-          # download.sh creates a depth-1 mpv checkout. Fetch both commits in a
-          # single shallow-boundary update: back-to-back depth-changing fetches
-          # can race Git's shallow-file bookkeeping on hosted runners.
+          # download.sh creates a depth-1 mpv checkout. Fetch the proven
+          # renderer baseline plus the two narrow upstream commits required
+          # for vo=gpu tunable PARAM support in one shallow-boundary update.
           git config gc.auto 0
-          git fetch --no-tags --depth=2 origin \
+          git fetch --no-tags --depth=3 origin \
             d54bad5636924ab3f39cb6e397b94b6aa8a7c433 \
+            91ceffce42534a45705617036b6b2a392a32fc57 \
             0d655fe66590009e1d77a17581257d677286531a
           git checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
-          # cherry-pick creates a new commit, so hosted runners need a local
-          # committer identity even though the upstream patch author is retained.
+          # cherry-pick creates new commits, so hosted runners need a local
+          # committer identity even though the upstream patch authors remain.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 0d655fe consumes bstr-named uniform helpers introduced by 91ceffce.
+          # Backport that prerequisite first so the clean textual cherry-pick
+          # is also source-compatible with the d54bad563 renderer baseline.
+          git cherry-pick 91ceffce42534a45705617036b6b2a392a32fc57
           git cherry-pick 0d655fe66590009e1d77a17581257d677286531a
 
       - name: Apply Chrovelo narrow native patches
@@ -126,7 +131,7 @@ jobs:
             cp "$log" "$dest"
           done
           git -C native/mpv-android/buildscripts/deps/mpv status --short > r08-native-failure/mpv-status.txt 2>&1 || true
-          git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' > r08-native-failure/mpv-commits.txt 2>&1 || true
+          git -C native/mpv-android/buildscripts/deps/mpv log -4 --format='%H %s' > r08-native-failure/mpv-commits.txt 2>&1 || true
 
       - name: Upload native failure diagnostics
         if: failure() && steps.trigger.outputs.enabled == 'yes'
@@ -146,7 +151,7 @@ jobs:
           test -f lib/build/outputs/aar/lib-release.aar
           test -f buildscripts/prefix/arm64/lib/libmpv.so
           grep -F '#define SHADER_MAX_PARAMS 64' buildscripts/deps/mpv/video/out/gpu/user_shaders.h
-          git -C buildscripts/deps/mpv log -2 --oneline
+          git -C buildscripts/deps/mpv log -3 --oneline
           readelf -lW buildscripts/prefix/arm64/lib/libmpv.so | tee /tmp/libmpv-program-headers.txt
           python3 - <<'PY'
           from pathlib import Path
@@ -182,7 +187,7 @@ jobs:
           cp native/mpv-android/lib/build/outputs/aar/lib-release.aar r08-proof/Chrovelo-R08-custom-libmpv-arm64.aar
           cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so r08-proof/libmpv-arm64.so
           cp /tmp/libmpv-program-headers.txt r08-proof/libmpv-program-headers.txt
-          git -C native/mpv-android/buildscripts/deps/mpv log -2 --format='%H %s' > r08-proof/mpv-commits.txt
+          git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' > r08-proof/mpv-commits.txt
           find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' -print -exec cp {} r08-proof/Chrovelo-R08-custom-libmpv-arm64-debug.apk \; | head -n 1
           sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
 
