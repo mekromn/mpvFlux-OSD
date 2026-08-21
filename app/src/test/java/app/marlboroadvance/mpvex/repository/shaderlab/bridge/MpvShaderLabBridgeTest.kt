@@ -59,6 +59,39 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
+  fun boundedHandshakeReadbackRecoversWhenLoadScriptInitializationIsDelayed() {
+    val transport = FakeTransport()
+    val scheduled = mutableListOf<() -> Unit>()
+    val stages = mutableListOf<String>()
+    val bridge =
+      MpvShaderLabBridge(
+        transport = transport,
+        syncProbe =
+          object : ShaderLabBridgeSyncProbe {
+            override fun record(state: ShaderLabBackendState) = Unit
+
+            override fun stage(name: String, detail: String) {
+              stages += name
+            }
+          },
+        schedule = { _, task -> scheduled += task },
+      )
+
+    bridge.attach()
+    assertFalse(bridge.state.value.ready)
+    assertEquals(5, scheduled.size)
+    assertTrue("load_script_requested" in stages)
+
+    transport.strings[MpvShaderLabBridge.NATIVE_STATE_PROPERTY] =
+      "__ready=1\n__version=6.1.1-r07-state-1\n__serial=9"
+    scheduled.first().invoke()
+
+    assertTrue(bridge.state.value.ready)
+    assertEquals(9L, bridge.state.value.snapshotSerial)
+    assertTrue(stages.any { it.startsWith("handshake_retry_") })
+  }
+
+  @Test
   fun enginePreparationFailureSurfacesAsBackendErrorBeforeTransportAttach() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(

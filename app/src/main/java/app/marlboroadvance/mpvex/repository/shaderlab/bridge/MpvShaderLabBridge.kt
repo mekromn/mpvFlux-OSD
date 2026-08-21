@@ -157,6 +157,7 @@ class MpvShaderLabBridge internal constructor(
   private val transport: ShaderLabMpvTransport,
   private val syncProbe: ShaderLabBridgeSyncProbe = NoOpShaderLabBridgeSyncProbe,
   private val prepareEngine: () -> Unit = {},
+  private val schedule: (Long, () -> Unit) -> Unit = { _, _ -> Unit },
 ) : ShaderLabCommandBackend {
   constructor(engineInstaller: ShaderLabEngineInstaller) : this(
     transport = LibMpvShaderLabTransport(),
@@ -169,6 +170,9 @@ class MpvShaderLabBridge internal constructor(
         is ShaderLabEngineInstallState.Failure -> error(installState.reason)
         ShaderLabEngineInstallState.Idle -> error("Shader Lab engine installer remained idle")
       }
+    },
+    schedule = { delayMillis, task ->
+      android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(task, delayMillis)
     },
   )
 
@@ -185,13 +189,16 @@ class MpvShaderLabBridge internal constructor(
   fun attach() {
     synchronized(commandLock) {
       runCatching {
+        syncProbe.stage("engine_prepare")
         prepareEngine()
+        syncProbe.stage("engine_ready")
         if (attached) {
           transport.detach()
         }
         transport.attach(::onObservedProperty)
         attached = true
         _state.value = _state.value.copy(connected = true)
+        syncProbe.stage("observer_attached")
 
         transport.observeString(NATIVE_STATE_PROPERTY)
         transport.observeString(SOURCE_GAMMA_PROPERTY)
@@ -206,15 +213,33 @@ class MpvShaderLabBridge internal constructor(
           transport.getDouble(spec.id.legacyKey)?.let { consumeDirectControlValue(spec.id, it) }
         }
 
-        // R04 owns the readable controller in the canonical workspace, but its
-        // reference mpv.conf is intentionally not forced into the user's active
-        // config. R07 therefore activates the controller explicitly only when
-        // no native-state publisher is already present. This makes the bridge
-        // work on a clean install without duplicating a user-configured script.
+        // mpv explicitly documents that load-script initialization waiting is
+        // undefined across versions. Use a short bounded handshake/readback
+        // sequence instead of assuming the script is ready synchronously.
         if (nativeState.isNullOrBlank()) {
+          syncProbe.stage("load_script_requested", CONTROLLER_PATH)
           transport.command("load-script", CONTROLLER_PATH)
         }
-        transport.command("script-message", "p9lab-native-state")
+        requestNativeStateHandshake("initial")
+        HANDSHAKE_DELAYS_MS.forEachIndexed { index, delayMillis ->
+          schedule(delayMillis) {
+            synchronized(commandLock) {
+              if (!attached || _state.value.ready) return@synchronized
+              runCatching { requestNativeStateHandshake("retry_${index + 1}") }
+                .onFailure(::recordTransportFailure)
+            }
+          }
+        }
+        schedule(HANDSHAKE_TIMEOUT_MS) {
+          synchronized(commandLock) {
+            if (attached && !_state.value.ready) {
+              syncProbe.stage(
+                "timeout",
+                "No native-state snapshot after bounded load-script handshake",
+              )
+            }
+          }
+        }
         _events.tryEmit(ShaderLabBridgeEvent.Attached)
       }.onFailure(::recordTransportFailure)
     }
@@ -237,7 +262,15 @@ class MpvShaderLabBridge internal constructor(
 
   fun requestStateRefresh() {
     serializedCommand {
-      transport.command("script-message", "p9lab-native-state")
+      requestNativeStateHandshake("manual")
+    }
+  }
+
+  fun toggleLegacyOverlay() {
+    runCatching {
+      serializedCommand {
+        transport.command("script-message", "p9lab-toggle-ui")
+      }
     }
   }
 
@@ -297,6 +330,16 @@ class MpvShaderLabBridge internal constructor(
 
   override fun loadState() =
     scriptMessage("p9lab-native-load-state")
+
+  private fun requestNativeStateHandshake(stage: String) {
+    syncProbe.stage("handshake_$stage")
+    val current = transport.getString(NATIVE_STATE_PROPERTY)
+    if (!current.isNullOrBlank()) {
+      consumeNativeState(current)
+      return
+    }
+    transport.command("script-message", "p9lab-native-state")
+  }
 
   private fun scriptMessage(name: String, vararg args: String) {
     serializedCommand {
@@ -363,6 +406,7 @@ class MpvShaderLabBridge internal constructor(
   private fun recordTransportFailure(error: Throwable) {
     val message = error.message ?: "Shader Lab MPV transport failure"
     _state.value = _state.value.copy(lastError = message, applyBusy = false)
+    runCatching { syncProbe.stage("transport_error", message) }
     emitBackendErrorIfChanged(message)
   }
 
@@ -376,6 +420,9 @@ class MpvShaderLabBridge internal constructor(
     const val NATIVE_STATE_PROPERTY = "user-data/p9lab/native-state"
     const val SOURCE_GAMMA_PROPERTY = "video-params/gamma"
     const val CONTROLLER_PATH = "/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua"
+
+    private val HANDSHAKE_DELAYS_MS = longArrayOf(100L, 300L, 750L, 1500L)
+    private const val HANDSHAKE_TIMEOUT_MS = 2500L
 
     private val MPV_PROPERTY_CONTROLS =
       ShaderLabControlCatalog.controls.filter { it.kind == ShaderLabControlKind.MPV_PROPERTY }
