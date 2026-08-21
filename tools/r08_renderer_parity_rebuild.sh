@@ -11,6 +11,8 @@ MPV_PARAM_HELPER_SHA=91ceffce42534a45705617036b6b2a392a32fc57
 MPV_PARAM_SHA=0d655fe66590009e1d77a17581257d677286531a
 FFMPEG_SHA=5ba2525c7affc29cbd99e6266946b382d3fffe8b
 LIBPLACEBO_SHA=c93aa134ab62365ce1177efff99b8e1e66a818e7
+LIBPLACEBO_TAG=v7.360.0
+LIBPLACEBO_DESCRIBE=v7.360.0-3-gc93aa134
 
 rm -rf "$HARNESS_DIR"
 git clone https://github.com/Secozzi/mpv-android.git "$HARNESS_DIR"
@@ -27,14 +29,19 @@ git -C deps/ffmpeg checkout --detach "$FFMPEG_SHA"
 ./download.sh
 
 # Replace the harness's floating libplacebo clone with the exact R07 renderer revision.
+# Fetch a small ancestor window plus the release tag because libplacebo embeds
+# `git describe --dirty` in its version string. Code SHA and version fingerprint
+# must both reproduce R07 exactly.
 rm -rf deps/libplacebo
 git init deps/libplacebo
 git -C deps/libplacebo remote add origin https://github.com/haasn/libplacebo.git
-git -C deps/libplacebo fetch --depth=1 origin "$LIBPLACEBO_SHA"
-git -C deps/libplacebo checkout --detach FETCH_HEAD
+git -C deps/libplacebo fetch --depth=8 origin "$LIBPLACEBO_SHA"
+git -C deps/libplacebo fetch --depth=1 origin "refs/tags/$LIBPLACEBO_TAG:refs/tags/$LIBPLACEBO_TAG"
+git -C deps/libplacebo checkout --detach "$LIBPLACEBO_SHA"
 git -C deps/libplacebo submodule update --init --recursive --depth=1
 
 test "$(git -C deps/libplacebo rev-parse HEAD)" = "$LIBPLACEBO_SHA"
+test "$(git -C deps/libplacebo describe --dirty)" = "$LIBPLACEBO_DESCRIBE"
 
 # Reproduce the Android force_mpegts delta against the exact shipped FFmpeg source.
 python3 - <<'PY'
@@ -226,6 +233,7 @@ PY
     echo "mpv_param=$MPV_PARAM_SHA"
     echo "ffmpeg=$FFMPEG_SHA"
     echo "libplacebo=$LIBPLACEBO_SHA"
+    echo "libplacebo_describe=$LIBPLACEBO_DESCRIBE"
     echo "shader_max_params=64"
     echo "vulkan_build_flag=enabled"
     echo "dt_needed_libvulkan=yes"
