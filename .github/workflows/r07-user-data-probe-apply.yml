@@ -109,7 +109,22 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          python3 scripts/verify_shaderlab_engine.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+
+          root = Path('app/src/main/assets/mpvlab/source')
+          manifest = json.loads((root / 'engine-manifest.json').read_text())
+          for entry in manifest['files']:
+              path = root / entry['path']
+              data = path.read_bytes()
+              actual_hash = hashlib.sha256(data).hexdigest()
+              if len(data) != entry['bytes']:
+                  raise SystemExit(f"size mismatch: {entry['path']} expected={entry['bytes']} actual={len(data)}")
+              if actual_hash != entry['sha256']:
+                  raise SystemExit(f"sha256 mismatch: {entry['path']} expected={entry['sha256']} actual={actual_hash}")
+          print('Shader Lab engine manifest integrity PASS')
+          PY
           ./gradlew :app:testStandardDebugUnitTest --stacktrace
           git diff --check
 
