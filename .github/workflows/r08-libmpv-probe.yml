@@ -82,19 +82,49 @@ jobs:
         run: |
           set -euo pipefail
           cd native/mpv-android/buildscripts
+
+          # Pre-create the exact shipped FFmpeg revision so download.sh cannot
+          # create/patch its n7.1 default tree first.
+          mkdir -p deps
+          git clone --filter=blob:none --no-checkout --shallow-since='2026-02-20T00:00:00Z' \
+            https://github.com/FFmpeg/FFmpeg.git deps/ffmpeg
+          git -C deps/ffmpeg checkout --detach 5ba2525c7affc29cbd99e6266946b382d3fffe8b
+
           ./download.sh
 
-          cd deps/ffmpeg
-          git config gc.auto 0
-          git reset --hard HEAD
-          git fetch --no-tags --depth=1 origin 5ba2525c7affc29cbd99e6266946b382d3fffe8b
-          git checkout --detach 5ba2525c7affc29cbd99e6266946b382d3fffe8b
-          git apply ../../patches/ffmpeg_force_mpegts.patch
-          test "$(git rev-parse HEAD)" = '5ba2525c7affc29cbd99e6266946b382d3fffe8b'
-          git diff --check
-          git log -1 --format='%H %s' | tee /tmp/r08-ffmpeg-commit.txt
+          # Reproduce the harness's Android force_mpegts behavior with exact,
+          # asserted edits against the shipped FFmpeg source layout.
+          python3 - <<'PY'
+          from pathlib import Path
 
-          cd ../mpv
+          path = Path('deps/ffmpeg/libavformat/hls.c')
+          text = path.read_text()
+
+          old = '    int extension_picky;\n    int max_reload;\n    int http_persistent;'
+          new = '    int extension_picky;\n    int max_reload;\n    int force_mpegts;\n    int http_persistent;'
+          assert text.count(old) == 1, f'struct anchor count={text.count(old)}'
+          text = text.replace(old, new, 1)
+
+          old = '            in_fmt = av_find_input_format(pls->audio_setup_info.codec_id == AV_CODEC_ID_AAC ? "aac" :\n                                          pls->audio_setup_info.codec_id == AV_CODEC_ID_AC3 ? "ac3" : "eac3");\n        } else {\n            pls->ctx->probesize = s->probesize > 0 ? s->probesize : 1024 * 4;'
+          new = '            in_fmt = av_find_input_format(pls->audio_setup_info.codec_id == AV_CODEC_ID_AAC ? "aac" :\n                                          pls->audio_setup_info.codec_id == AV_CODEC_ID_AC3 ? "ac3" : "eac3");\n        } else if (c->force_mpegts > 0) {\n            in_fmt = av_find_input_format("mpegts");\n        } else {\n            pls->ctx->probesize = s->probesize > 0 ? s->probesize : 1024 * 4;'
+          assert text.count(old) == 1, f'probe anchor count={text.count(old)}'
+          text = text.replace(old, new, 1)
+
+          old = '    {"m3u8_hold_counters", "The maximum number of times to load m3u8 when it refreshes without new segments",\n        OFFSET(m3u8_hold_counters), AV_OPT_TYPE_INT, {.i64 = 1000}, 0, INT_MAX, FLAGS},\n    {"http_persistent", "Use persistent HTTP connections",'
+          new = '    {"m3u8_hold_counters", "The maximum number of times to load m3u8 when it refreshes without new segments",\n        OFFSET(m3u8_hold_counters), AV_OPT_TYPE_INT, {.i64 = 1000}, 0, INT_MAX, FLAGS},\n    {"force_mpegts", "Force use of mpegts format for hls segments",\n        OFFSET(force_mpegts), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, FLAGS},\n    {"http_persistent", "Use persistent HTTP connections",'
+          assert text.count(old) == 1, f'option anchor count={text.count(old)}'
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          test "$(git -C deps/ffmpeg rev-parse HEAD)" = '5ba2525c7affc29cbd99e6266946b382d3fffe8b'
+          git -C deps/ffmpeg diff --check
+          git -C deps/ffmpeg log -1 --format='%H %s' | tee /tmp/r08-ffmpeg-commit.txt
+          grep -F 'int force_mpegts;' deps/ffmpeg/libavformat/hls.c
+          grep -F 'else if (c->force_mpegts > 0)' deps/ffmpeg/libavformat/hls.c
+
+          cd deps/mpv
           git config gc.auto 0
           git fetch --no-tags --depth=3 origin \
             d54bad5636924ab3f39cb6e397b94b6aa8a7c433 \
@@ -178,7 +208,6 @@ jobs:
 
           jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
           jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
-
           strings native/base-aar/jni/arm64-v8a/libmpv.so | grep -F 'mpv v0.41.0-224-gd54bad563'
           strings native/base-aar/jni/arm64-v8a/libavdevice.so | grep -F 'FFmpeg version N-122998-g5ba2525c7a'
           sha256sum native/base-aar/classes.jar native/base-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-wrapper-before.sha256
