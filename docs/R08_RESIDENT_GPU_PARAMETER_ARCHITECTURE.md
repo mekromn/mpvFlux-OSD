@@ -40,6 +40,37 @@ R08 will build an Android libmpv from the same mpv-android lineage while minimiz
 
 If the targeted backport cannot be built cleanly, the fallback is a pinned newer mpv source that already contains `0d655fe...`, with the same 64-parameter limit patch. Broad renderer rewrites are explicitly out of scope.
 
+## Pixel hardware optimization scope
+
+The native rebuild is also the correct place to remove avoidable CPU/GPU/platform overhead, provided every optimization preserves output and the proven Pixel brightness path.
+
+### Safe first-wave optimizations
+
+- **16 KB Android page compatibility:** build every native shared object with true 16 KB ELF alignment. Prefer a modern NDK where this is native behavior; otherwise pass both `-Wl,-z,max-page-size=16384` and `-Wl,-z,common-page-size=16384`. Verify the final APK/AAR rather than trusting flags alone.
+- **Release optimization + LTO:** retain Meson release optimization and test ThinLTO/LTO for libmpv and compatible native dependencies. Keep it only when bit-exact/visual behavior, startup, playback stability, and build reproducibility remain clean.
+- **arm64-first Pixel artifact:** keep the Pixel test artifact arm64-only so no irrelevant 32-bit/x86 native payload is installed or measured. General release compatibility remains a separate packaging concern.
+- **Runtime CPU dispatch rather than dangerous global `-mcpu` assumptions:** FFmpeg/mpv already contain architecture-specific SIMD paths. Preserve runtime dispatch and NEON/FP16/dot-product capable code paths. Do not globally compile the public arm64 build for one Tensor core in a way that could break other ARM64 devices. A Pixel-only experimental flavor may be benchmarked separately.
+- **Resident shader/pipeline:** compile the Pixel shader once and keep it resident. Preserve mpv/Vulkan shader and pipeline caching. Parameter changes must not cause source regeneration or shader reattachment.
+- **Zero allocation / zero file I/O tuning loop:** slider updates should format/transport parameter state only; no shader files, temporary files, JSON parsing, preset disk I/O, or large object allocation belongs in the per-pointer-event path.
+- **Frame-cadence-aware transport:** measure parameter commits against the Pixel display cadence and avoid sending superseded updates faster than they can be presented. Do not add a fixed debounce unless measurement proves it improves end-to-end latency.
+- **Mali-G715 shader profiling without precision reduction:** profile instruction count, register pressure, divergent branches, and the Oklab/gamut-search loop. Optimize algebra and invariants only when rendered output remains within the project's strict fidelity target. Do not replace high-precision math with `mediump` shortcuts.
+- **Thermal/power telemetry during stress tests:** record dropped frames, render time, decoder load, and sustained behavior during long 4K/high-brightness runs. Avoid forcing CPU/GPU clocks or affinity against Android's `sched_pixel` policy; sustained real playback matters more than a short benchmark peak.
+
+### Hardware decode policy
+
+Keep `hwdec=mediacodec-copy` as the quality-safe baseline during R08. It still uses the hardware decoder, but copies decoded frames back through system memory before the Vulkan render path.
+
+Direct `mediacodec`/zero-copy is not enabled merely for speed. mpv documents Android direct MediaCodec color/bit-depth caveats, and its non-copy Android path is not a normal Vulkan zero-copy route. A true Android hardware-buffer-to-Vulkan interop experiment would be a separate measured optimization after resident parameters pass; it must demonstrate identical color, bit depth, HDR/SDR classification, shader compatibility, and Pixel brightness behavior before it can replace `mediacodec-copy`.
+
+### Explicit non-goals
+
+- no `vo=gpu-next` migration;
+- no lower-precision framebuffer or shader math;
+- no forced RGB decoder conversion;
+- no fixed-function path that bypasses Shader Lab;
+- no aggressive Tensor-only CPU flags in the general arm64 binary without a compatibility-safe dispatch mechanism;
+- no performance tweak is accepted solely because a synthetic benchmark is faster.
+
 ## Resident shader strategy
 
 The Pixel perceptual expansion shader will become a stable managed shader file containing `//!PARAM` blocks. Runtime values become uniforms/parameters instead of source-code literals.
@@ -86,6 +117,7 @@ Automated:
 - custom libmpv contains `vo=gpu` tunable PARAM support;
 - `SHADER_MAX_PARAMS >= 64`;
 - existing MPVLib API compiles unchanged;
+- all native libraries pass 16 KB alignment verification;
 - resident shader has no unresolved template tokens;
 - every mapped shader control has exactly one typed parameter definition;
 - full Shader Lab unit suite passes;
@@ -99,6 +131,7 @@ Pixel 9 Pro XL / Android 16:
 - final requested value is the value rendered after input stops;
 - HDR remains protected from SDR-only expansion;
 - parameter transport latency is recorded;
+- decoder/render timing, dropped-frame behavior, and sustained thermal behavior are recorded;
 - no backend error remains after successful changes.
 
 R08 does not build the final workstation UI. R09 remains the ViewModel/authoritative UI-state layer and R10 remains the native workstation UI redesign.
