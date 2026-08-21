@@ -251,6 +251,33 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
+  fun saveCompatibilityActionsCarryCurrentResidentAndMpvStateWithoutLegacyApply() {
+    val transport = FakeTransport()
+    val bridge = MpvShaderLabBridge(transport)
+    bridge.attach()
+    bridge.setValues(
+      linkedMapOf(
+        ShaderLabControlId.LUMA_CONTRAST to 0.31,
+        ShaderLabControlId.MPV_BRIGHTNESS to 4.25,
+      ),
+    )
+    transport.commands.clear()
+
+    bridge.saveUserPreset(ShaderLabPresetId.User(3))
+    bridge.saveState()
+
+    val preset = transport.commands.single { it.getOrNull(1) == "p9lab-native-user-save-r08" }
+    assertEquals("3", preset[2])
+    assertTrue(preset[3].contains("LUMA_CONTRAST=0.31000000000000000"))
+    assertTrue(preset[3].contains("brightness=4.2500000000000000"))
+    val state = transport.commands.single { it.getOrNull(1) == "p9lab-native-save-state-r08" }
+    assertTrue(state[2].contains("LUMA_CONTRAST=0.31000000000000000"))
+    assertTrue(state[2].contains("brightness=4.2500000000000000"))
+    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-set" })
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+  }
+
+  @Test
   fun externalMpvPropertyObservationUpdatesStateImmediately() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)

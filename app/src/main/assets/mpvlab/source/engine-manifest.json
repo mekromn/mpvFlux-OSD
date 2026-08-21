@@ -1,7 +1,7 @@
 {
   "canonicalWorkspace": "/storage/emulated/0/mpv",
   "controlCatalogVersion": "legacy-v6.1.1",
-  "engineVersion": "6.1.1-source-r08-resident-1",
+  "engineVersion": "6.1.1-source-r08-resident-2",
   "entrypoints": {
     "controller": "scripts/pixel9-shader-lab.lua",
     "inputConfig": "config/input.conf",
@@ -42,9 +42,9 @@
       "sha256": "e5c1f26ce49b478d46d4bef736772bd25f405d385078577b4e702cf2318ae9a6"
     },
     {
-      "bytes": 72995,
+      "bytes": 74435,
       "path": "scripts/pixel9-shader-lab.lua",
-      "sha256": "a9358ffe892f3441c99cda23f65853b472683de9e7e367150bcc3a90feda7f79"
+      "sha256": "dc01420ccc2be0e68dcb5b28b5c3408a3ef73d009108a97c8c7213dd18864744"
     },
     {
       "bytes": 12193,
@@ -116,7 +116,7 @@
     "payloadParts": 8,
     "payloadSha256": "e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6",
     "r07StateTransport": "R07 state-3: event-driven native state with Android MPVLib compatibility fallback through the string-converted user-data root map.",
-    "r08ResidentTransport": "R08 resident-1: vo=gpu PARAM shader with complete glsl-shader-opts transport; legacy A/B generation retained only as compatibility fallback.",
+    "r08ResidentTransport": "R08 resident-2: vo=gpu PARAM shader with complete glsl-shader-opts transport; Lua preset/state saves receive state-only cache synchronization without ordinary GLSL regeneration.",
     "repository": "mekromn/mpvFlux-OSD"
   }
 }

@@ -1653,6 +1653,28 @@ local function native_invoke(label, busy, fn)
     return ok and result ~= false
 end
 
+-- R08 resident transport compatibility cache. Android owns ordinary
+-- resident GPU tuning, but legacy Lua preset/state files still serialize B.
+-- This updates that in-memory bank without applying properties, generating
+-- GLSL, writing runtime shader files, or changing the shader list.
+local function resident_cache_sync(snapshot)
+    if type(snapshot) ~= "string" then return false end
+    local touched = false
+    for token in snapshot:gmatch("[^;]+") do
+        local key, value = token:match("^([^=]+)=([%+%-%.%deE]+)$")
+        local it = key and by_key[key] or nil
+        local num = tonumber(value)
+        if it and it.kind ~= "action" and num then
+            B[key] = round_if_needed(clamp(num, it.min, it.max), it.integer)
+            if it.kind == "granularity" then step_mode = B[key] end
+            touched = true
+        end
+    end
+    enforce_order(B, "")
+    sync_granularity_item()
+    return touched
+end
+
 local function native_set_by_key(key, value)
     local it = by_key[key]
     local num = tonumber(value)
@@ -1800,6 +1822,19 @@ mp.register_script_message("p9lab-revert-video-start",function() request_confirm
 -- confirmation layer because confirmation policy now lives above R06.
 mp.register_script_message("p9lab-native-state", publish_native_state)
 mp.register_script_message("p9lab-native-set", native_set_by_key)
+mp.register_script_message("p9lab-native-user-save-r08", function(slot, snapshot)
+    native_invoke("Save user preset", false, function()
+        resident_cache_sync(snapshot)
+        B.USER_SLOT = clamp(tonumber(slot) or B.USER_SLOT, 1, 10)
+        return save_user_preset(B.USER_SLOT)
+    end)
+end)
+mp.register_script_message("p9lab-native-save-state-r08", function(snapshot)
+    native_invoke("Save state", false, function()
+        resident_cache_sync(snapshot)
+        return save_state()
+    end)
+end)
 mp.register_script_message("p9lab-native-bypass", function() native_invoke("Bypass", true, toggle_bypass) end)
 mp.register_script_message("p9lab-native-preview-start", function() native_invoke("Original preview start", true, preview_start) end)
 mp.register_script_message("p9lab-native-preview-end", function() native_invoke("Original preview end", true, preview_end) end)

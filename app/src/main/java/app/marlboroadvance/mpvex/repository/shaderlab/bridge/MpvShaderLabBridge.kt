@@ -352,7 +352,11 @@ class MpvShaderLabBridge internal constructor(
     scriptMessageAdoptingValues("p9lab-native-reset-all")
 
   override fun saveUserPreset(preset: ShaderLabPresetId.User) =
-    scriptMessage("p9lab-native-user-save", preset.slot.toString())
+    scriptMessage(
+      "p9lab-native-user-save-r08",
+      preset.slot.toString(),
+      luaStateSnapshot(),
+    )
 
   override fun loadUserPreset(preset: ShaderLabPresetId.User) =
     scriptMessageAdoptingValues("p9lab-native-user-load", preset.slot.toString())
@@ -372,7 +376,7 @@ class MpvShaderLabBridge internal constructor(
     )
 
   override fun saveState() =
-    scriptMessage("p9lab-native-save-state")
+    scriptMessage("p9lab-native-save-state-r08", luaStateSnapshot())
 
   override fun loadState() =
     scriptMessageAdoptingValues("p9lab-native-load-state")
@@ -450,9 +454,10 @@ class MpvShaderLabBridge internal constructor(
     val previous = _state.value
     var decoded = ShaderLabNativeStateCodec.decode(raw, previous)
     val legacyShaderSwapChanged = decoded.shaderSwapCount != previous.shaderSwapCount
+    val firstReadySnapshot = !previous.ready && decoded.ready
 
     if (residentGpu.isAuthoritative()) {
-      if (!decoded.applyBusy && (adoptResidentFromLuaOnIdle || legacyShaderSwapChanged)) {
+      if (!decoded.applyBusy && (firstReadySnapshot || adoptResidentFromLuaOnIdle || legacyShaderSwapChanged)) {
         runCatching { residentGpu.adoptLegacyValues(decoded.values, decoded.sourceKind) }
           .onFailure(::recordTransportFailure)
         adoptResidentFromLuaOnIdle = false
@@ -521,6 +526,13 @@ class MpvShaderLabBridge internal constructor(
     if (message == lastEventError) return
     lastEventError = message
     _events.tryEmit(ShaderLabBridgeEvent.BackendError(message))
+  }
+
+  private fun luaStateSnapshot(): String {
+    val normalized = ShaderLabControlCatalog.normalizeValues(_state.value.values)
+    return ShaderLabControlCatalog.controls.joinToString(";") { spec ->
+      "${spec.id.legacyKey}=${formatDouble(normalized.getValue(spec.id))}"
+    }
   }
 
   companion object {
