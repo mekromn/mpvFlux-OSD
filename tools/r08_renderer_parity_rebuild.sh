@@ -19,11 +19,8 @@ BUILDSCRIPTS="$HARNESS_DIR/buildscripts"
 
 HARNESS_SHA=fd17fb02cfb8c8b5c12621c2c90769685d635d91
 MPV_BASE_SHA=d54bad5636924ab3f39cb6e397b94b6aa8a7c433
-MPV_COMPONENTS_SANITY_SHA=1bf50fc71cb4e96d62a94999cd3952057ebb81a9
-MPV_HOOK_COMPONENT_GUARD_SHA=c1a21bb8d9db238054b7029c29d9e319889aad04
 MPV_PARAM_HELPER_SHA=91ceffce42534a45705617036b6b2a392a32fc57
 MPV_PARAM_SHA=0d655fe66590009e1d77a17581257d677286531a
-MPV_STRIDE_ALIGNMENT_SHA=8d04be2b856c9330178ddd6ab20848c58fada3af
 FFMPEG_SHA=5ba2525c7affc29cbd99e6266946b382d3fffe8b
 LIBPLACEBO_SHA=c93aa134ab62365ce1177efff99b8e1e66a818e7
 LIBPLACEBO_TAG=v7.360.0
@@ -94,23 +91,23 @@ PY
 test "$(git -C deps/ffmpeg rev-parse HEAD)" = "$FFMPEG_SHA"
 git -C deps/ffmpeg diff --check
 
-# Reset mpv to the proven R07 base, then layer the minimal R08 PARAM support
-# plus the selected post-R07 vo=gpu/Vulkan correctness fixes from the miner pass.
+# R08 parity contract: exact R07 mpv plus ONLY the resident PARAM prerequisite
+# backports. Mined post-R07 renderer/correctness patches stay out until the Pixel
+# proves this reference renderer visually equivalent to accepted R07.
 r08_phase mpv_param_backport
 cd deps/mpv
 git config gc.auto 0
 git fetch --no-tags --depth=3 origin \
-  "$MPV_BASE_SHA" \
-  "$MPV_COMPONENTS_SANITY_SHA" "$MPV_HOOK_COMPONENT_GUARD_SHA" \
-  "$MPV_PARAM_HELPER_SHA" "$MPV_PARAM_SHA" "$MPV_STRIDE_ALIGNMENT_SHA"
+  "$MPV_BASE_SHA" "$MPV_PARAM_HELPER_SHA" "$MPV_PARAM_SHA"
 git checkout --detach "$MPV_BASE_SHA"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git cherry-pick "$MPV_COMPONENTS_SANITY_SHA"
-git cherry-pick "$MPV_HOOK_COMPONENT_GUARD_SHA"
 git cherry-pick "$MPV_PARAM_HELPER_SHA"
 git cherry-pick "$MPV_PARAM_SHA"
-git cherry-pick "$MPV_STRIDE_ALIGNMENT_SHA"
+
+# Guard against accidentally contaminating the parity build with miner patches.
+test "$(git rev-list --count "$MPV_BASE_SHA"..HEAD)" = "2"
+git log --oneline --decorate -3
 cd ../..
 
 # Apply the Android Vulkan build topology used by mpv-android's Vulkan support branch,
@@ -237,9 +234,6 @@ grep -F 'dep_libplacebo=(shaderc)' include/depinfo.sh
 grep -F -- '-Dvk-proc-addr=enabled' scripts/libplacebo.sh
 grep -F -- '-Dvulkan=enabled' scripts/mpv.sh
 grep -F '#define SHADER_MAX_PARAMS 64' deps/mpv/video/out/gpu/user_shaders.h
-grep -F 'Invalid COMPONENTS: %d' deps/mpv/video/out/gpu/user_shaders.c
-grep -F 'unsupported value: %d (max supported: %d)' deps/mpv/video/out/gpu/video.c
-grep -F 'mp_lcm(stride_align' deps/mpv/video/mp_image.c
 
 r08_phase native_build
 build_rc=0
@@ -279,17 +273,15 @@ PY
 {
     echo "harness=$HARNESS_SHA"
     echo "mpv_base=$MPV_BASE_SHA"
-    echo "mpv_components_sanity=$MPV_COMPONENTS_SANITY_SHA"
-    echo "mpv_hook_component_guard=$MPV_HOOK_COMPONENT_GUARD_SHA"
     echo "mpv_param_helper=$MPV_PARAM_HELPER_SHA"
     echo "mpv_param=$MPV_PARAM_SHA"
-    echo "mpv_stride_alignment=$MPV_STRIDE_ALIGNMENT_SHA"
     echo "ffmpeg=$FFMPEG_SHA"
     echo "libplacebo=$LIBPLACEBO_SHA"
     echo "libplacebo_describe=$LIBPLACEBO_DESCRIBE"
     echo "shader_max_params=64"
     echo "vulkan_build_flag=enabled"
     echo "dt_needed_libvulkan=yes"
+    echo "post_r07_miner_patches=none"
     echo "r07_libplacebo_string=v7.360.0 (v7.360.0-3-gc93aa134)"
 } | tee /tmp/r08-renderer-parity-fingerprint.txt
 
