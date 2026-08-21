@@ -21,6 +21,11 @@ Chat sessions can be interrupted, compacted, or forced into a new thread. The fi
 - Large binary artifacts already handled by GitHub Actions/releases or local build outputs.
 - Irrelevant casual conversation.
 
+## Imported/recovered records
+
+- `2026-08-21-r08-continuity.md` — concise active R08 checkpoint and current renderer-parity blocker.
+- `2026-08-21-r08-recovered-chat-exports.md` — reconstructed source-controlled handoff from the two user-supplied August 21 ChatGPT exports, including the R08 implementation milestones, exact R07 renderer fingerprint, renderer-parity decision, upstream miner results, and job `96881103884` next action.
+
 ## Important limitation
 
 ChatGPT cannot automatically export every historical ChatGPT transcript from the account. This archive therefore contains the conversation/project context actually available to the active project/session plus future checkpoints created during development. If a complete historical ChatGPT export is supplied later, it can be imported into this directory as additional source-controlled records.
