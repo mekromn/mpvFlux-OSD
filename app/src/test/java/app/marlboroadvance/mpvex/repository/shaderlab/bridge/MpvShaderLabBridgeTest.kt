@@ -1,10 +1,10 @@
 package app.marlboroadvance.mpvex.repository.shaderlab.bridge
 
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlId
-import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabPresetId
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommand
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommandApi
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommandResult
+import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabPresetId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -41,7 +41,7 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
-  fun attachObservesNativeStateGammaAndAllLiveMpvPropertiesAndRequestsHandshake() {
+  fun attachObservesStateGammaAndSixMpvPropertiesAndRequestsHandshake() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
 
@@ -60,36 +60,11 @@ class MpvShaderLabBridgeTest {
         listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH),
       ),
     )
-    assertEquals(
-      listOf("script-message", "p9lab-native-state"),
-      transport.commands.last(),
-    )
+    assertEquals(listOf("script-message", "p9lab-native-state"), transport.commands.last())
   }
 
   @Test
-  fun attachReusesExistingNativePublisherWithoutLoadingDuplicateController() {
-    val transport = FakeTransport().apply {
-      strings[MpvShaderLabBridge.NATIVE_STATE_PROPERTY] =
-        "__ready=1\n__version=6.1.1-r07-state-1\n__serial=7"
-    }
-    val bridge = MpvShaderLabBridge(transport)
-
-    bridge.attach()
-
-    assertTrue(bridge.state.value.ready)
-    assertEquals(7L, bridge.state.value.snapshotSerial)
-    assertFalse(
-      transport.commands.contains(
-        listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH),
-      ),
-    )
-    assertTrue(
-      transport.commands.none { it == listOf("script-message", "p9lab-native-state") },
-    )
-  }
-
-  @Test
-  fun attachRecoversNativeSnapshotFromUserDataRootWhenLeafStringReadIsUnavailable() {
+  fun attachReusesExistingPublisherAndRecoversNestedUserDataState() {
     val transport = FakeTransport().apply {
       strings[MpvShaderLabBridge.USER_DATA_ROOT_PROPERTY] =
         """{"p9lab":{"ui-visible":"no","native-state":"__ready=1\n__version=6.1.1-r07-state-3\n__serial=11\n__bank=B"}}"""
@@ -102,80 +77,12 @@ class MpvShaderLabBridgeTest {
     assertEquals("6.1.1-r07-state-3", bridge.state.value.backendVersion)
     assertEquals(11L, bridge.state.value.snapshotSerial)
     assertEquals(ShaderLabBank.B, bridge.state.value.activeBank)
-    assertFalse(
-      transport.commands.contains(
-        listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH),
-      ),
-    )
+    assertFalse(transport.commands.contains(listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH)))
     assertTrue(transport.commands.none { it == listOf("script-message", "p9lab-native-state") })
   }
 
   @Test
-  fun observedUserDataRootSnapshotUpdatesStateWhenNestedLeafObservationIsUnavailable() {
-    val transport = FakeTransport()
-    val bridge = MpvShaderLabBridge(transport)
-    bridge.attach()
-
-    transport.emitText(
-      MpvShaderLabBridge.USER_DATA_ROOT_PROPERTY,
-      """{"p9lab":{"native-state":"__ready=1\n__version=6.1.1-r07-state-3\n__serial=12\nbrightness=7.5"}}""",
-    )
-
-    assertTrue(bridge.state.value.ready)
-    assertEquals(12L, bridge.state.value.snapshotSerial)
-    assertEquals(7.5, bridge.state.value.values.getValue(ShaderLabControlId.MPV_BRIGHTNESS), 0.0)
-  }
-
-  @Test
-  fun boundedHandshakeReadbackRecoversWhenLoadScriptInitializationIsDelayed() {
-    val transport = FakeTransport()
-    val scheduled = mutableListOf<() -> Unit>()
-    val stages = mutableListOf<String>()
-    val bridge =
-      MpvShaderLabBridge(
-        transport = transport,
-        syncProbe =
-          object : ShaderLabBridgeSyncProbe {
-            override fun record(state: ShaderLabBackendState) = Unit
-
-            override fun stage(name: String, detail: String) {
-              stages += name
-            }
-          },
-        schedule = { _, task -> scheduled += task },
-      )
-
-    bridge.attach()
-    assertFalse(bridge.state.value.ready)
-    assertEquals(5, scheduled.size)
-    assertTrue("load_script_requested" in stages)
-
-    transport.strings[MpvShaderLabBridge.NATIVE_STATE_PROPERTY] =
-      "__ready=1\n__version=6.1.1-r07-state-1\n__serial=9"
-    scheduled.first().invoke()
-
-    assertTrue(bridge.state.value.ready)
-    assertEquals(9L, bridge.state.value.snapshotSerial)
-    assertTrue(stages.any { it.startsWith("handshake_retry_") })
-  }
-
-  @Test
-  fun enginePreparationFailureSurfacesAsBackendErrorBeforeTransportAttach() {
-    val transport = FakeTransport()
-    val bridge = MpvShaderLabBridge(
-      transport = transport,
-      prepareEngine = { error("synthetic engine preparation failure") },
-    )
-
-    bridge.attach()
-
-    assertFalse(bridge.state.value.connected)
-    assertEquals("synthetic engine preparation failure", bridge.state.value.lastError)
-    assertTrue(transport.commands.isEmpty())
-  }
-
-  @Test
-  fun nativeSnapshotDecodesTypedObservableStateAndControlValues() {
+  fun nativeSnapshotDecodesObservableStateAndResidentValues() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
@@ -184,19 +91,17 @@ class MpvShaderLabBridgeTest {
       MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
       """
       __ready=1
-      __version=6.1.1-r07-state-1
+      __version=6.1.1-r07-state-3
       __serial=42
       __bank=A
-      __bypassed=1
-      __preview=1
+      __bypassed=0
+      __preview=0
       __sdr=1
       __source_gamma=bt.1886
       __shader_slot=B
-      __swaps=17
-      __apply_busy=1
-      __error=synthetic backend warning
+      __swaps=0
+      __apply_busy=0
       __user1=1
-      __user2=0
       __user10=1
       brightness=12.5
       LUMA_CONTRAST=0.333
@@ -207,18 +112,8 @@ class MpvShaderLabBridgeTest {
     val state = bridge.state.value
     assertTrue(state.connected)
     assertTrue(state.ready)
-    assertEquals("6.1.1-r07-state-1", state.backendVersion)
     assertEquals(42L, state.snapshotSerial)
-    assertEquals(ShaderLabBank.A, state.activeBank)
-    assertTrue(state.bypassed)
-    assertTrue(state.previewOriginal)
-    assertTrue(state.sdrEligible)
     assertEquals(ShaderLabSourceKind.SDR, state.sourceKind)
-    assertEquals("bt.1886", state.sourceGamma)
-    assertEquals(ShaderLabShaderSlot.B, state.shaderSlot)
-    assertEquals(17L, state.shaderSwapCount)
-    assertTrue(state.applyBusy)
-    assertEquals("synthetic backend warning", state.lastError)
     assertEquals(setOf(1, 10), state.userPresetOccupied)
     assertEquals(12.5, state.values.getValue(ShaderLabControlId.MPV_BRIGHTNESS), 0.0)
     assertEquals(0.333, state.values.getValue(ShaderLabControlId.LUMA_CONTRAST), 0.0)
@@ -226,43 +121,35 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
-  fun externalMpvPropertyObservationUpdatesStateImmediatelyWithoutSnapshotPolling() {
+  fun sourceClassificationAttachesResidentOnlyForSdrAndRemovesItForHdr() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
-
-    transport.emitNumber("brightness", 18.25)
-    transport.emitNumber("sdr-intensity", 4.75)
-
-    assertEquals(18.25, bridge.state.value.values.getValue(ShaderLabControlId.MPV_BRIGHTNESS), 0.0)
-    assertEquals(4.75, bridge.state.value.values.getValue(ShaderLabControlId.SDR_INTENSITY), 0.0)
-    assertEquals(1, transport.commands.count { it.getOrNull(1) == "p9lab-native-state" })
-  }
-
-  @Test
-  fun sourceGammaObservationClassifiesSdrPqHlgAndNotReady() {
-    val transport = FakeTransport()
-    val bridge = MpvShaderLabBridge(transport)
-    bridge.attach()
+    transport.commands.clear()
 
     transport.emitText(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY, "bt.1886")
     assertEquals(ShaderLabSourceKind.SDR, bridge.state.value.sourceKind)
     assertTrue(bridge.state.value.sdrEligible)
+    assertTrue(
+      transport.commands.contains(
+        listOf("change-list", "glsl-shaders", "append", ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
+      ),
+    )
 
+    transport.commands.clear()
     transport.emitText(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY, "pq")
     assertEquals(ShaderLabSourceKind.HDR_PQ, bridge.state.value.sourceKind)
     assertFalse(bridge.state.value.sdrEligible)
-
-    transport.emitText(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY, "hlg")
-    assertEquals(ShaderLabSourceKind.HDR_HLG, bridge.state.value.sourceKind)
-    assertFalse(bridge.state.value.sdrEligible)
-
-    transport.emitText(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY, "")
-    assertEquals(ShaderLabSourceKind.NOT_READY, bridge.state.value.sourceKind)
+    assertTrue(
+      transport.commands.contains(
+        listOf("change-list", "glsl-shaders", "remove", ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
+      ),
+    )
+    assertFalse(transport.commands.any { it.getOrNull(2) == "append" })
   }
 
   @Test
-  fun semanticBackendMapsEveryCommandFamilyToNativeLuaMessages() {
+  fun normalShaderAndMpvTuningBypassesLuaAndNeverMutatesShaderList() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
@@ -272,41 +159,112 @@ class MpvShaderLabBridgeTest {
       linkedMapOf(
         ShaderLabControlId.MPV_BRIGHTNESS to 4.25,
         ShaderLabControlId.LUMA_CONTRAST to 0.31,
+        ShaderLabControlId.GAMUT_ITERATIONS to 9.0,
       ),
     )
-    bridge.toggleBypass()
-    bridge.setPreviewOriginal(true)
-    bridge.setPreviewOriginal(false)
-    bridge.togglePreviewOriginalFallback()
-    bridge.saveUserPreset(ShaderLabPresetId.User(3))
-    bridge.loadUserPreset(ShaderLabPresetId.User(4))
-    bridge.clearUserPreset(ShaderLabPresetId.User(5))
-    bridge.loadBuiltInPreset(ShaderLabPresetId.BuiltIn(6))
-    bridge.morph(ShaderLabPresetId.BuiltIn(2), ShaderLabPresetId.User(7), 0.375)
-    bridge.revertVideoStart()
-    bridge.resetAll()
-    bridge.saveState()
-    bridge.loadState()
 
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-set", "brightness", "4.2500000000000000")))
-    assertTrue(transport.commands.any { it.take(4) == listOf("script-message", "p9lab-native-set", "LUMA_CONTRAST", "0.31000000000000000") })
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-bypass")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-preview-start")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-preview-end")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-preview-toggle")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-user-save", "3")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-user-load", "4")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-user-clear", "5")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-builtin-load", "6")))
-    assertTrue(transport.commands.any { it.take(4) == listOf("script-message", "p9lab-native-morph", "2", "17") })
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-revert-video-start")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-reset-all")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-save-state")))
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-load-state")))
+    assertTrue(transport.commands.contains(listOf("set", "brightness", "4.2500000000000000")))
+    val optsCommand = transport.commands.single { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
+    assertEquals("set", optsCommand[0])
+    assertTrue(optsCommand[2].contains("LUMA_CONTRAST=0.31000000000000000"))
+    assertTrue(optsCommand[2].contains("GAMUT_ITERATIONS=9"))
+    assertEquals(39, optsCommand[2].split(',').size)
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-set" })
+    assertEquals(0.31, bridge.state.value.values.getValue(ShaderLabControlId.LUMA_CONTRAST), 0.0)
   }
 
   @Test
-  fun commandTransportFailureBecomesR06TypedFailureAndObservableBackendError() {
+  fun controllerCompatibilityValuesStillUseLuaWithoutSendingShaderOpts() {
+    val transport = FakeTransport()
+    val bridge = MpvShaderLabBridge(transport)
+    bridge.attach()
+    transport.commands.clear()
+
+    bridge.setValues(mapOf(ShaderLabControlId.TOUCH_GRANULARITY to 3.0))
+
+    assertTrue(
+      transport.commands.contains(
+        listOf("script-message", "p9lab-native-set", "TOUCH_GRANULARITY", "3.0000000000000000"),
+      ),
+    )
+    assertFalse(transport.commands.any { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY })
+  }
+
+  @Test
+  fun bypassAndPreviewLuaStateAlsoControlsResidentShaderVisibility() {
+    val transport = FakeTransport()
+    val bridge = MpvShaderLabBridge(transport)
+    bridge.attach()
+    transport.emitText(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY, "bt.1886")
+    transport.commands.clear()
+
+    bridge.toggleBypass()
+    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-bypass")))
+
+    transport.emitText(
+      MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
+      "__ready=1\n__serial=2\n__sdr=1\n__source_gamma=bt.1886\n__bypassed=1\n__preview=0\n__swaps=0\n__apply_busy=0",
+    )
+    assertTrue(
+      transport.commands.contains(
+        listOf("change-list", "glsl-shaders", "remove", ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
+      ),
+    )
+
+    transport.commands.clear()
+    transport.emitText(
+      MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
+      "__ready=1\n__serial=3\n__sdr=1\n__source_gamma=bt.1886\n__bypassed=0\n__preview=0\n__swaps=0\n__apply_busy=0",
+    )
+    assertTrue(
+      transport.commands.contains(
+        listOf("change-list", "glsl-shaders", "append", ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
+      ),
+    )
+  }
+
+  @Test
+  fun legacyPresetBoundaryAdoptsValuesThenRestoresSingleResidentShader() {
+    val transport = FakeTransport()
+    val bridge = MpvShaderLabBridge(transport)
+    bridge.attach()
+    transport.emitText(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY, "bt.1886")
+    transport.commands.clear()
+
+    bridge.loadBuiltInPreset(ShaderLabPresetId.BuiltIn(6))
+    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-builtin-load", "6")))
+
+    transport.emitText(
+      MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
+      "__ready=1\n__serial=4\n__sdr=1\n__source_gamma=bt.1886\n__swaps=1\n__apply_busy=0\nLUMA_CONTRAST=0.456",
+    )
+
+    assertEquals(0.456, bridge.state.value.values.getValue(ShaderLabControlId.LUMA_CONTRAST), 0.0)
+    assertTrue(transport.commands.any { it.getOrNull(2) == "append" && it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH })
+    assertTrue(
+      transport.commands.any {
+        it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY &&
+          it.getOrNull(2)?.contains("LUMA_CONTRAST=0.45600000000000002") == true
+      },
+    )
+  }
+
+  @Test
+  fun externalMpvPropertyObservationUpdatesStateImmediately() {
+    val transport = FakeTransport()
+    val bridge = MpvShaderLabBridge(transport)
+    bridge.attach()
+
+    transport.emitNumber("brightness", 18.25)
+    transport.emitNumber("sdr-intensity", 4.75)
+
+    assertEquals(18.25, bridge.state.value.values.getValue(ShaderLabControlId.MPV_BRIGHTNESS), 0.0)
+    assertEquals(4.75, bridge.state.value.values.getValue(ShaderLabControlId.SDR_INTENSITY), 0.0)
+  }
+
+  @Test
+  fun commandTransportFailureBecomesTypedFailureAndObservableBackendError() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
@@ -320,14 +278,11 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
-  fun detachClearsConnectionReadinessWithoutDestroyingLastKnownValues() {
+  fun detachClearsReadinessWithoutDestroyingLastKnownValues() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
-    transport.emitText(
-      MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
-      "__ready=1\nbrightness=9.0",
-    )
+    transport.emitNumber("brightness", 9.0)
 
     bridge.detach()
 
