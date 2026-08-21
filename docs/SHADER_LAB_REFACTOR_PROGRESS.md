@@ -12,10 +12,11 @@ This file is the execution/status companion to `SHADER_LAB_REFACTOR_ROADMAP.md` 
 - `R05_STATUS = DONE`
 - `R06_STATUS = DONE`
 - `R07_STATUS = DONE`
-- `R08_STATUS = TODO`
+- `R08_STATUS = IN_PROGRESS`
 - R07 closed on a real Pixel 9 Pro XL / Android 16 synchronization smoke using State-3.
 - The device produced a typed 53-control snapshot with `status=PASS`, backend `6.1.1-r07-state-3`, positive serial, SDR classification, and no backend error.
-- R08 is the next executable roadmap step; no R08 implementation was included in the R07 closeout turn.
+- R08 was deliberately redefined before old file-reload implementation landed: ordinary tuning now targets a resident `vo=gpu` shader with native tunable parameters.
+- Current bundled mpv `d54bad563...` (2026-02-25) predates upstream `vo=gpu` PARAM support `0d655fe...` (2026-04-17), and upstream's fixed 16-parameter table is too small for Shader Lab; R08 therefore begins with a narrowly scoped Chrovelo libmpv build/backport and a 64-parameter limit.
 
 ## Verified repository baseline at R06 completion
 
@@ -313,8 +314,26 @@ Acceptance result:
 
 **R07 COMPLETE.**
 
-## Next step
+## R08 architecture pivot / execution start
 
-`CURRENT_STEP = R08` — **Deterministic shader generation and atomic live-apply pipeline**.
+**Status:** `IN_PROGRESS`
 
-R08 is now the next executable step, but it was intentionally **not implemented in this R07 closeout turn**.
+The old R08 file-regeneration/coalescing plan was superseded before app/shader implementation landed. Temporary scaffolding from that abandoned attempt was removed and the feature branch returned to the clean R07 closeout before this pivot.
+
+New R08 target:
+
+- resident `vo=gpu` Pixel shader;
+- live `//!PARAM` uniforms through `glsl-shader-opts`;
+- native R07 bridge owns parameter transport;
+- no GLSL file generation or A/B shader swap during ordinary adjustment;
+- exact V3.1 rendering math and Pixel expanded-brightness behavior preserved.
+
+Native prerequisite discovered during replan:
+
+- installed/bundled mpv source commit: `d54bad5636924ab3f39cb6e397b94b6aa8a7c433`, dated 2026-02-25;
+- upstream `vo=gpu` tunable-PARAM support: `0d655fe66590009e1d77a17581257d677286531a`, dated 2026-04-17;
+- upstream `SHADER_MAX_PARAMS`: 16; Chrovelo target: 64.
+
+Implementation begins by producing and validating the narrowly scoped Android libmpv prerequisite, then converting the shader/bridge to resident parameter transport. Detailed design is in `docs/R08_RESIDENT_GPU_PARAMETER_ARCHITECTURE.md`.
+
+`CURRENT_STEP` remains R08 until the new native/resident pipeline passes real Pixel validation. R09 is not started.

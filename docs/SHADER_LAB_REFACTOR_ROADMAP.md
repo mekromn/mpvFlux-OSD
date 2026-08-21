@@ -365,15 +365,32 @@ Normal CI: run #27 / `32409643876` — **PASS**.
 
 ---
 
-## R08 — Deterministic shader generation and atomic live-apply pipeline
+## R08 — Resident `vo=gpu` shader + native parameter transport
 
-**Status:** `TODO`
+**Status:** `IN_PROGRESS`
 
-**Goal:** make rapid live tuning stable, low-latency, and race-free.
+**Goal:** eliminate GLSL regeneration/file I/O/shader swapping from ordinary live tuning while preserving the empirically proven Pixel `vo=gpu` + Vulkan expanded-brightness path.
 
-**Work:** preserve useful double-slot/last-known-good behavior, serialize generation/application, coalesce rapid changes, rollback bad shader applies, expose errors, preserve precision, and add a diagnostic proof mode.
+**Architecture pivot:** the previous file-reload/coalescing R08 was superseded before any app/shader implementation landed. Normal tuning will use one resident GPU shader with tunable `//!PARAM` values driven through mpv's `glsl-shader-opts`. Generated A/B runtime shaders become compatibility/export fallback only.
 
-**Validation:** rapid-change stress + intentionally invalid shader test.
+**Native prerequisite:** the currently bundled mpv `v0.41.0-224-gd54bad563` predates upstream `vo=gpu` tunable-parameter support. R08 therefore owns a narrowly scoped Chrovelo libmpv build: preserve the proven `d54bad563...` renderer baseline where practical, backport upstream `0d655fe66590009e1d77a17581257d677286531a` (`vo_gpu: initial support for tunable parameters`), and raise `SHADER_MAX_PARAMS` from 16 to 64 so the complete Shader Lab parameter set can remain in one pass.
+
+**Work:**
+
+- produce a reproducible Android libmpv/AAR with the targeted `vo=gpu` PARAM capability and unchanged `is.xyz.mpv.MPVLib` API;
+- convert the current Pixel shader into one stable managed resident shader with typed float/int `//!PARAM` definitions and no unresolved runtime template literals;
+- preserve V3.1 luminance, Oklab color-volume, skin protection, gamut limiting, diagnostic, and master-control math;
+- route shader values through the R07 native bridge to `glsl-shader-opts` at maximum useful numeric precision;
+- keep MPV-native controls (`sdr-intensity`, brightness, contrast, gamma, saturation, hue) on direct MPV properties;
+- retain last-known-good parameter state and restore it on transport failure without rewriting shader source;
+- instrument parameter update count/latency and prove ordinary tuning does not write/swap runtime shader files;
+- retain legacy Lua workstation/preset compatibility only until the native UI stages replace it.
+
+**Validation:** full unit/build/signing validation plus Pixel 9 Pro XL / Android 16 proof that `vo=gpu` expanded brightness is unchanged, resident parameters visibly update video, rapid changes end on the exact final value, the resident shader remains unchanged, normal shader-swap count stays flat, HDR remains protected, and parameter latency is recorded.
+
+Detailed design: `docs/R08_RESIDENT_GPU_PARAMETER_ARCHITECTURE.md`.
+
+A deeper renderer API is a contingency only if upstream `glsl-shader-opts` fails the real-device latency requirement; do not resurrect generated-file live tuning as the primary architecture.
 
 ---
 
