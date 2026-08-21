@@ -1,0 +1,150 @@
+Verdict: TAKE eventually, but reserve for infrequent structural switches.
+
+4. 3e0729eb — ENUM parameters
+
+This is better for Shader Lab than I initially appreciated.
+
+Upstream adds named enumeration values and allows either int or DEFINE backing. Enumeration entries themselves become symbolic GLSL constants.
+
+That means we could define things conceptually like:
+
+GAMUT_MODE = PERCEPTUAL / CLIP / ADAPTIVE
+
+without Android needing to know magic numeric values.
+
+More importantly, an ENUM int can remain a runtime value rather than a compile-time structural switch.
+
+Verdict: TAKE. Very valuable.
+
+5. 7d1a598b — PARAM values inside RPN expressions
+
+This may be the most powerful Shader Lab improvement after basic resident PARAM support.
+
+Upstream extends WHEN, WIDTH and HEIGHT expression evaluation so shader parameters—and ENUM members—can participate directly. It specifically removes the old vo=gpu limitation that parameters couldn't be referenced in WHEN.
+
+That gives us resident conditional execution such as:
+
+run expensive gamut diagnostics only when enabled
+
+skip an entire processing stage at neutral/default value
+
+parameter-controlled processing topology
+
+selectable algorithms without loading another shader
+
+eventually make sections of V3.1 self-disabling when mathematically unnecessary
+
+And most importantly, WHEN can prevent a pass from executing, rather than merely multiply its result by zero.
+
+Verdict: DEFINITELY TAKE.
+
+The clean PARAM capability chain should ultimately be approximately:
+
+91ceffce helper → 0d655fe basic PARAM → a0b62333 DEFINE → 3e0729eb ENUM → supporting auto-param work → 7d1a598b RPN PARAM.
+
+We already have the first two.
+
+Vulkan/libplacebo gold
+
+These are newer than our R07 c93aa134 libplacebo baseline. I would not upgrade libplacebo wholesale to obtain them—we already learned what that can do to fidelity. Instead, investigate surgical backports onto c93aa134.
+
+6. 738ed4e — prevent raster/compute image-layout corruption
+
+This one got my attention.
+
+Upstream reports that when an image written by a compute-storage operation is subsequently used by a raster pass, some Vulkan drivers can corrupt pixels during the transition from GENERAL to COLOR_ATTACHMENT_OPTIMAL.
+
+The fix keeps storage-capable render targets in VK_IMAGE_LAYOUT_GENERAL. Upstream explicitly notes that this avoids corruption and that modern/mobile GPUs should tolerate the approach well.
+
+Our pipeline is unusually relevant because we're doing custom shader processing on a Pixel Vulkan renderer.
+
+Verdict: HIGH-PRIORITY EXPERIMENT. Pixel A/B required.
+
+I would not silently fold this into the reference renderer, but I absolutely want a test APK containing only this change after R07 parity.
+
+7. 65054fab — validate Vulkan layout transitions
+
+Before attempting host-image layout transitions, libplacebo now checks whether the current layout is actually in the supported transition set.
+
+Verdict: strong correctness candidate.
+
+8. f644b2ed — don't request impossible Vulkan memory types
+
+VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT can make a format have zero valid memory types on some implementations. This patch probes the requirements first and uses host transfer only when the resulting image remains allocatable.
+
+This isn't sexy, but it is exactly the kind of driver-specific robustness that matters on Android.
+
+Verdict: strong candidate, dependency compatibility permitting.
+
+9. 464d6eab + d4624cb — Vulkan synchronization fixes
+
+The first fixes an invalid access mask during pure layout transitions.
+
+Then upstream found an additional write-after-write hazard and refined the solution so the write access bit is added specifically for write transitions.
+
+These should be treated as a pair/sequence—not cherry-pick the first and stop there.
+
+Verdict: promising stability backports, but test as a coherent dependency chain.
+
+Motion / frame timing
+
+10. 68b1d10d — rewritten display-sync audio drift controller
+
+This one is substantial.
+
+The old display-sync controller could overshoot and effectively fight its own compensation. Upstream replaced it with:
+
+low-pass-filtered A/V error
+proportional correction
+gradual exponential recovery
+adaptive slew limits
+
+The goal is convergence to steady sync rather than oscillating audio-speed corrections.
+
+This won't increase spatial fidelity, but it may improve perceived motion smoothness and playback steadiness, particularly on high-refresh displays.
+
+Verdict: keep for a dedicated motion/audio A/B after R08.
+
+I would not mix it into the renderer-parity build.
+
+Things the mine disproved
+
+There are no meaningful post-R07 MediaCodec-copy improvements for us to grab. The newest MediaCodec-specific commits surfaced by the history search predate our Feb 25 baseline.
+
+Likewise, there is essentially no new Android-specific vo=gpu renderer patch after our R07 base.
+
+And I found no compelling new post-R07 vo=gpu dithering fix.
+
+That's useful information: we're not missing some giant Android patch series. The main opportunities are generic vo_gpu, PARAM, image-layout and Vulkan correctness improvements.
+
+What I would build
+
+Our future native stack should look like this:
+
+Reference core
+
+mpv d54bad563
+FFmpeg 5ba2525c7a
+libplacebo c93aa134
+Vulkan enabled exactly like R07
+
+Then layer only:
+
+R08 required
+91ceffce → 0d655fe → 64-PARAM ceiling
+
+Safe-upstream pack
+c1a21bb8 + 8d04be2b
+
+Shader Lab Advanced PARAM pack
+a0b62333 + 3e0729eb + dependencies + 7d1a598b
+
+Then separately make experimental Pixel APKs for the selected libplacebo Vulkan fixes—one logical patch family at a time.
+
+The most important immediate task is still restoring exact R07 Vulkan + libplacebo renderer parity. Once that's visually identical again, we will finally have a trustworthy reference against which these mined improvements can be measured instead of confusing “new code” with “better image.”
+
+
+Show more
+--------------------------------------
+ChatGPT:
+
