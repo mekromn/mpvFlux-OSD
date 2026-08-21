@@ -1,1 +1,1 @@
-trigger guarded R07 device regression repair
+retrigger guarded R07 device regression repair after test expectation correction
