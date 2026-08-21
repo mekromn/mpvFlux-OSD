@@ -217,10 +217,12 @@ class MpvShaderLabBridge internal constructor(
         syncProbe.stage("observer_attached")
 
         transport.observeString(NATIVE_STATE_PROPERTY)
+        transport.observeString(LUA_PROBE_PROPERTY)
         transport.observeString(SOURCE_GAMMA_PROPERTY)
         MPV_PROPERTY_CONTROLS.forEach { transport.observeDouble(it.id.legacyKey) }
 
         val nativeState = transport.getString(NATIVE_STATE_PROPERTY)
+        transport.getString(LUA_PROBE_PROPERTY)?.let { syncProbe.stage("lua_probe_readback", it) }
         nativeState
           ?.takeIf { it.isNotBlank() }
           ?.let(::consumeNativeState)
@@ -249,9 +251,11 @@ class MpvShaderLabBridge internal constructor(
         schedule(HANDSHAKE_TIMEOUT_MS) {
           synchronized(commandLock) {
             if (attached && !_state.value.ready) {
+              val luaProbe = transport.getString(LUA_PROBE_PROPERTY) ?: "<null>"
+              val userDataRoot = transport.getString("user-data") ?: "<null>"
               syncProbe.stage(
                 "timeout",
-                "No native-state snapshot after pre-init script option and bounded load-script fallback",
+                "No native-state snapshot; lua_probe=$luaProbe; user_data_root=${userDataRoot.take(240)}",
               )
             }
           }
@@ -386,6 +390,9 @@ class MpvShaderLabBridge internal constructor(
       property == NATIVE_STATE_PROPERTY && value is ShaderLabMpvValue.Text -> {
         consumeNativeState(value.value)
       }
+      property == LUA_PROBE_PROPERTY && value is ShaderLabMpvValue.Text -> {
+        syncProbe.stage("lua_probe_observed", value.value)
+      }
       property == SOURCE_GAMMA_PROPERTY && value is ShaderLabMpvValue.Text -> {
         consumeSourceGamma(value.value)
       }
@@ -440,6 +447,7 @@ class MpvShaderLabBridge internal constructor(
 
   companion object {
     const val NATIVE_STATE_PROPERTY = "user-data/p9lab/native-state"
+    const val LUA_PROBE_PROPERTY = "user-data/p9lab/lua-probe"
     const val SOURCE_GAMMA_PROPERTY = "video-params/gamma"
     const val CONTROLLER_PATH = "/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua"
 

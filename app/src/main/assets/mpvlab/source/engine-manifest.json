@@ -1,7 +1,7 @@
 {
   "canonicalWorkspace": "/storage/emulated/0/mpv",
   "controlCatalogVersion": "legacy-v6.1.1",
-  "engineVersion": "6.1.1-source-r07-state-1",
+  "engineVersion": "6.1.1-source-r07-state-2",
   "entrypoints": {
     "controller": "scripts/pixel9-shader-lab.lua",
     "inputConfig": "config/input.conf",
@@ -41,9 +41,9 @@
       "sha256": "e5c1f26ce49b478d46d4bef736772bd25f405d385078577b4e702cf2318ae9a6"
     },
     {
-      "bytes": 72983,
+      "bytes": 73789,
       "path": "scripts/pixel9-shader-lab.lua",
-      "sha256": "4931b68977e6744de67f93596079f6d52ed03d6453df45265afd0d7e061d786d"
+      "sha256": "df101cd5da2c4697cde44e61564eddefb13bfcf5c3192e5f89d31e2d51b94176"
     },
     {
       "bytes": 12193,
@@ -109,7 +109,7 @@
     "normalization": "Original workstation archive extracted before ShaderLabRuntime private-directory/native-bridge patching.",
     "payloadParts": 8,
     "payloadSha256": "e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6",
-    "r07StateTransport": "Event-driven user-data/p9lab/native-state publisher with explicit native semantic messages; no periodic state timer.",
+    "r07StateTransport": "R07 state-2 device probe: event-driven native state plus tiny user-data Lua/Android transport discriminator.",
     "repository": "mekromn/mpvFlux-OSD"
   }
 }
