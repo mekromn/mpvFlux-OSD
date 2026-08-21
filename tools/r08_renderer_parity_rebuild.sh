@@ -121,7 +121,7 @@ assert text.count(old) == 1, text.count(old)
 text = text.replace(old, 'export LDFLAGS="-Wl,-O1,--icf=safe -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"', 1)
 buildall.write_text(text)
 
-application = Path('../app/src/main/jni/Application.mk')
+application = Path('../lib/src/main/jni/Application.mk')
 text = application.read_text()
 old = 'APP_PLATFORM := android-21'
 assert text.count(old) == 1, text.count(old)
@@ -174,7 +174,7 @@ else
 fi
 
 builddir=$PWD
-application_mk=$PWD/../../../app/src/main/jni/Application.mk
+application_mk=$PWD/../../../lib/src/main/jni/Application.mk
 abi=armeabi-v7a
 [[ "$ndk_triple" == "aarch64"* ]] && abi=arm64-v8a
 [[ "$ndk_triple" == "x86_64"* ]] && abi=x86_64
@@ -223,7 +223,7 @@ PY
 r08_phase static_audit
 grep -F 'local apilvl=24' buildall.sh
 grep -F -- '-Wl,-z,common-page-size=16384' buildall.sh
-grep -F 'APP_PLATFORM := android-24' ../app/src/main/jni/Application.mk
+grep -F 'APP_PLATFORM := android-24' ../lib/src/main/jni/Application.mk
 grep -F 'dep_libplacebo=(shaderc)' include/depinfo.sh
 grep -F -- '-Dvk-proc-addr=enabled' scripts/libplacebo.sh
 grep -F -- '-Dvulkan=enabled' scripts/mpv.sh
