@@ -1,0 +1,149 @@
+name: R07 Device Regression Apply
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'agent/upstream-refactor'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/upstream-refactor
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply guarded R07 device fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one guarded match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          bridge = 'app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt'
+          replace_once(
+              bridge,
+              '''class MpvShaderLabBridge internal constructor(\n  private val transport: ShaderLabMpvTransport,\n  private val syncProbe: ShaderLabBridgeSyncProbe = NoOpShaderLabBridgeSyncProbe,\n  private val prepareEngine: () -> Unit = {},\n) : ShaderLabCommandBackend {''',
+              '''class MpvShaderLabBridge internal constructor(\n  private val transport: ShaderLabMpvTransport,\n  private val syncProbe: ShaderLabBridgeSyncProbe = NoOpShaderLabBridgeSyncProbe,\n  private val prepareEngine: () -> Unit = {},\n  private val schedule: (Long, () -> Unit) -> Unit = { _, _ -> Unit },\n) : ShaderLabCommandBackend {''',
+          )
+          replace_once(
+              bridge,
+              '''    prepareEngine = {\n      when (val installState = engineInstaller.installOrRepair()) {\n        is ShaderLabEngineInstallState.Success -> Unit\n        is ShaderLabEngineInstallState.Blocked ->\n          error("Shader Lab workspace unavailable: ${installState.workspaceState}")\n        is ShaderLabEngineInstallState.Failure -> error(installState.reason)\n        ShaderLabEngineInstallState.Idle -> error("Shader Lab engine installer remained idle")\n      }\n    },\n  )''',
+              '''    prepareEngine = {\n      when (val installState = engineInstaller.installOrRepair()) {\n        is ShaderLabEngineInstallState.Success -> Unit\n        is ShaderLabEngineInstallState.Blocked ->\n          error("Shader Lab workspace unavailable: ${installState.workspaceState}")\n        is ShaderLabEngineInstallState.Failure -> error(installState.reason)\n        ShaderLabEngineInstallState.Idle -> error("Shader Lab engine installer remained idle")\n      }\n    },\n    schedule = { delayMillis, task ->\n      android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(task, delayMillis)\n    },\n  )''',
+          )
+
+          old_attach = '''  fun attach() {\n    synchronized(commandLock) {\n      runCatching {\n        prepareEngine()\n        if (attached) {\n          transport.detach()\n        }\n        transport.attach(::onObservedProperty)\n        attached = true\n        _state.value = _state.value.copy(connected = true)\n\n        transport.observeString(NATIVE_STATE_PROPERTY)\n        transport.observeString(SOURCE_GAMMA_PROPERTY)\n        MPV_PROPERTY_CONTROLS.forEach { transport.observeDouble(it.id.legacyKey) }\n\n        val nativeState = transport.getString(NATIVE_STATE_PROPERTY)\n        nativeState\n          ?.takeIf { it.isNotBlank() }\n          ?.let(::consumeNativeState)\n        transport.getString(SOURCE_GAMMA_PROPERTY)?.let(::consumeSourceGamma)\n        MPV_PROPERTY_CONTROLS.forEach { spec ->\n          transport.getDouble(spec.id.legacyKey)?.let { consumeDirectControlValue(spec.id, it) }\n        }\n\n        // R04 owns the readable controller in the canonical workspace, but its\n        // reference mpv.conf is intentionally not forced into the user's active\n        // config. R07 therefore activates the controller explicitly only when\n        // no native-state publisher is already present. This makes the bridge\n        // work on a clean install without duplicating a user-configured script.\n        if (nativeState.isNullOrBlank()) {\n          transport.command("load-script", CONTROLLER_PATH)\n        }\n        transport.command("script-message", "p9lab-native-state")\n        _events.tryEmit(ShaderLabBridgeEvent.Attached)\n      }.onFailure(::recordTransportFailure)\n    }\n  }'''
+          new_attach = '''  fun attach() {\n    synchronized(commandLock) {\n      runCatching {\n        syncProbe.stage("engine_prepare")\n        prepareEngine()\n        syncProbe.stage("engine_ready")\n        if (attached) {\n          transport.detach()\n        }\n        transport.attach(::onObservedProperty)\n        attached = true\n        _state.value = _state.value.copy(connected = true)\n        syncProbe.stage("observer_attached")\n\n        transport.observeString(NATIVE_STATE_PROPERTY)\n        transport.observeString(SOURCE_GAMMA_PROPERTY)\n        MPV_PROPERTY_CONTROLS.forEach { transport.observeDouble(it.id.legacyKey) }\n\n        val nativeState = transport.getString(NATIVE_STATE_PROPERTY)\n        nativeState\n          ?.takeIf { it.isNotBlank() }\n          ?.let(::consumeNativeState)\n        transport.getString(SOURCE_GAMMA_PROPERTY)?.let(::consumeSourceGamma)\n        MPV_PROPERTY_CONTROLS.forEach { spec ->\n          transport.getDouble(spec.id.legacyKey)?.let { consumeDirectControlValue(spec.id, it) }\n        }\n\n        // mpv explicitly documents that load-script initialization waiting is\n        // undefined across versions. Use a short bounded handshake/readback\n        // sequence instead of assuming the script is ready synchronously.\n        if (nativeState.isNullOrBlank()) {\n          syncProbe.stage("load_script_requested", CONTROLLER_PATH)\n          transport.command("load-script", CONTROLLER_PATH)\n        }\n        requestNativeStateHandshake("initial")\n        HANDSHAKE_DELAYS_MS.forEachIndexed { index, delayMillis ->\n          schedule(delayMillis) {\n            synchronized(commandLock) {\n              if (!attached || _state.value.ready) return@synchronized\n              runCatching { requestNativeStateHandshake("retry_${index + 1}") }\n                .onFailure(::recordTransportFailure)\n            }\n          }\n        }\n        schedule(HANDSHAKE_TIMEOUT_MS) {\n          synchronized(commandLock) {\n            if (attached && !_state.value.ready) {\n              syncProbe.stage(\n                "timeout",\n                "No native-state snapshot after bounded load-script handshake",\n              )\n            }\n          }\n        }\n        _events.tryEmit(ShaderLabBridgeEvent.Attached)\n      }.onFailure(::recordTransportFailure)\n    }\n  }'''
+          replace_once(bridge, old_attach, new_attach)
+
+          replace_once(
+              bridge,
+              '''  fun requestStateRefresh() {\n    serializedCommand {\n      transport.command("script-message", "p9lab-native-state")\n    }\n  }\n\n  override fun snapshotValues()''',
+              '''  fun requestStateRefresh() {\n    serializedCommand {\n      requestNativeStateHandshake("manual")\n    }\n  }\n\n  fun toggleLegacyOverlay() {\n    runCatching {\n      serializedCommand {\n        transport.command("script-message", "p9lab-toggle-ui")\n      }\n    }\n  }\n\n  override fun snapshotValues()''',
+          )
+
+          replace_once(
+              bridge,
+              '''  private fun scriptMessage(name: String, vararg args: String) {''',
+              '''  private fun requestNativeStateHandshake(stage: String) {\n    syncProbe.stage("handshake_$stage")\n    val current = transport.getString(NATIVE_STATE_PROPERTY)\n    if (!current.isNullOrBlank()) {\n      consumeNativeState(current)\n      return\n    }\n    transport.command("script-message", "p9lab-native-state")\n  }\n\n  private fun scriptMessage(name: String, vararg args: String) {''',
+          )
+
+          replace_once(
+              bridge,
+              '''  private fun recordTransportFailure(error: Throwable) {\n    val message = error.message ?: "Shader Lab MPV transport failure"\n    _state.value = _state.value.copy(lastError = message, applyBusy = false)\n    emitBackendErrorIfChanged(message)\n  }''',
+              '''  private fun recordTransportFailure(error: Throwable) {\n    val message = error.message ?: "Shader Lab MPV transport failure"\n    _state.value = _state.value.copy(lastError = message, applyBusy = false)\n    runCatching { syncProbe.stage("transport_error", message) }\n    emitBackendErrorIfChanged(message)\n  }''',
+          )
+
+          replace_once(
+              bridge,
+              '''    const val CONTROLLER_PATH = "/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua"\n\n    private val MPV_PROPERTY_CONTROLS =''',
+              '''    const val CONTROLLER_PATH = "/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua"\n\n    private val HANDSHAKE_DELAYS_MS = longArrayOf(100L, 300L, 750L, 1500L)\n    private const val HANDSHAKE_TIMEOUT_MS = 2500L\n\n    private val MPV_PROPERTY_CONTROLS =''',
+          )
+
+          probe = Path('app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/ShaderLabBridgeSyncProbe.kt')
+          probe.write_text('''package app.marlboroadvance.mpvex.repository.shaderlab.bridge\n\nimport java.io.File\n\ninternal fun interface ShaderLabBridgeSyncProbe {\n  fun record(state: ShaderLabBackendState)\n\n  fun stage(name: String, detail: String = "") = Unit\n}\n\ninternal data object NoOpShaderLabBridgeSyncProbe : ShaderLabBridgeSyncProbe {\n  override fun record(state: ShaderLabBackendState) = Unit\n}\n\n/**\n * R07 device-smoke proof and staged activation diagnostic. The file is created\n * as soon as bridge activation begins, then atomically replaced with PASS once\n * Android decodes a real Lua native-state snapshot.\n */\ninternal class FileShaderLabBridgeSyncProbe(\n  private val file: File = File("/storage/emulated/0/mpv/logs/shaderlab-r07-bridge-sync.txt"),\n) : ShaderLabBridgeSyncProbe {\n  private var lastSerial: Long = Long.MIN_VALUE\n\n  @Synchronized\n  override fun stage(name: String, detail: String) {\n    writeAtomically(\n      buildString {\n        appendLine("status=WAITING")\n        appendLine("stage=$name")\n        appendLine("detail=${detail.replace('\\n', ' ').replace('\\r', ' ')}")\n      },\n    )\n  }\n\n  @Synchronized\n  override fun record(state: ShaderLabBackendState) {\n    if (!state.ready || state.snapshotSerial == lastSerial) return\n    lastSerial = state.snapshotSerial\n\n    writeAtomically(\n      buildString {\n        appendLine("status=PASS")\n        appendLine("stage=snapshot_received")\n        appendLine("backend_version=${state.backendVersion.orEmpty()}")\n        appendLine("snapshot_serial=${state.snapshotSerial}")\n        appendLine("source_gamma=${state.sourceGamma.orEmpty()}")\n        appendLine("source_kind=${state.sourceKind}")\n        appendLine("sdr_eligible=${state.sdrEligible}")\n        appendLine("active_bank=${state.activeBank}")\n        appendLine("bypassed=${state.bypassed}")\n        appendLine("preview_original=${state.previewOriginal}")\n        appendLine("shader_slot=${state.shaderSlot}")\n        appendLine("shader_swaps=${state.shaderSwapCount}")\n        appendLine("apply_busy=${state.applyBusy}")\n        appendLine("control_count=${state.values.size}")\n        appendLine("user_preset_count=${state.userPresetOccupied.size}")\n        appendLine("last_error=${state.lastError.orEmpty().replace('\\n', ' ').replace('\\r', ' ')}")\n      },\n    )\n  }\n\n  private fun writeAtomically(text: String) {\n    file.parentFile?.mkdirs()\n    val temp = File(file.parentFile, ".${file.name}.tmp")\n    temp.writeText(text)\n    if (!temp.renameTo(file)) {\n      file.writeText(text)\n      temp.delete()\n    }\n  }\n}\n''')
+
+          player_button = 'app/src/main/java/app/marlboroadvance/mpvex/preferences/PlayerButton.kt'
+          replace_once(
+              player_button,
+              'import androidx.compose.material.icons.outlined.Headset\n',
+              'import androidx.compose.material.icons.outlined.Headset\nimport androidx.compose.material.icons.outlined.Science\n',
+          )
+          replace_once(
+              player_button,
+              '  SUBTITLES(Icons.Outlined.Subtitles),\n  MORE_OPTIONS(Icons.Outlined.MoreVert),',
+              '  SUBTITLES(Icons.Outlined.Subtitles),\n  SHADER_LAB(Icons.Outlined.Science),\n  MORE_OPTIONS(Icons.Outlined.MoreVert),',
+          )
+          replace_once(
+              player_button,
+              '    PlayerButton.SUBTITLES -> "Subtitles" // stringResource(R.string.btn_label_subtitles)\n    PlayerButton.MORE_OPTIONS -> "More Options"',
+              '    PlayerButton.SUBTITLES -> "Subtitles" // stringResource(R.string.btn_label_subtitles)\n    PlayerButton.SHADER_LAB -> "Shader Lab"\n    PlayerButton.MORE_OPTIONS -> "More Options"',
+          )
+
+          appearance = 'app/src/main/java/app/marlboroadvance/mpvex/preferences/AppearancePreferences.kt'
+          replace_once(
+              appearance,
+              '"CURRENT_CHAPTER,DECODER,AUDIO_TRACK,SUBTITLES,MORE_OPTIONS",',
+              '"CURRENT_CHAPTER,DECODER,AUDIO_TRACK,SUBTITLES,SHADER_LAB,MORE_OPTIONS",',
+          )
+          replace_once(
+              appearance,
+              '"SCREEN_ROTATION,DECODER,AUDIO_TRACK,SUBTITLES,BOOKMARKS_CHAPTERS,PLAYBACK_SPEED,BACKGROUND_PLAYBACK,REPEAT_MODE,SHUFFLE,VIDEO_ZOOM,FRAME_NAVIGATION,ASPECT_RATIO,PICTURE_IN_PICTURE,LOCK_CONTROLS,MORE_OPTIONS",',
+              '"SCREEN_ROTATION,DECODER,AUDIO_TRACK,SUBTITLES,BOOKMARKS_CHAPTERS,PLAYBACK_SPEED,BACKGROUND_PLAYBACK,REPEAT_MODE,SHUFFLE,VIDEO_ZOOM,FRAME_NAVIGATION,ASPECT_RATIO,PICTURE_IN_PICTURE,LOCK_CONTROLS,SHADER_LAB,MORE_OPTIONS",',
+          )
+
+          compat = Path('app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/PlayerButtonCompatibility.kt')
+          compat.write_text('''package app.marlboroadvance.mpvex.ui.player.controls\n\nimport androidx.compose.runtime.Composable\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.unit.Dp\nimport androidx.compose.ui.unit.dp\nimport app.marlboroadvance.mpvex.preferences.PlayerButton\nimport app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge\nimport app.marlboroadvance.mpvex.ui.player.PlayerActivity\nimport app.marlboroadvance.mpvex.ui.player.PlayerViewModel\nimport app.marlboroadvance.mpvex.ui.player.Sheets\nimport app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton\nimport app.marlboroadvance.mpvex.ui.theme.controlColor\nimport dev.vivvvek.seeker.Segment\nimport org.koin.compose.koinInject\n\ninternal fun List<PlayerButton>.withShaderLabAccessButton(): List<PlayerButton> {\n  if (PlayerButton.SHADER_LAB in this || PlayerButton.MORE_OPTIONS !in this) return this\n  return flatMap { button ->\n    if (button == PlayerButton.MORE_OPTIONS) listOf(PlayerButton.SHADER_LAB, button) else listOf(button)\n  }\n}\n\n@Composable\nfun RenderConfigurablePlayerButton(\n  button: PlayerButton,\n  chapters: List<Segment>,\n  currentChapter: Int?,\n  isSpeedNonOne: Boolean,\n  currentZoom: Float,\n  mediaTitle: String?,\n  hideBackground: Boolean,\n  decoder: app.marlboroadvance.mpvex.ui.player.Decoder,\n  playbackSpeed: Float,\n  onBackPress: () -> Unit,\n  onOpenSheet: (Sheets) -> Unit,\n  viewModel: PlayerViewModel,\n  activity: PlayerActivity,\n  modifier: Modifier = Modifier,\n  buttonSize: Dp = 48.dp,\n) {\n  val bridge = koinInject<MpvShaderLabBridge>()\n  val clickEvent = LocalPlayerButtonsClickEvent.current\n\n  when (button) {\n    PlayerButton.MORE_OPTIONS ->\n      ControlsButton(\n        icon = button.icon,\n        onClick = {\n          clickEvent()\n          onOpenSheet(Sheets.More)\n        },\n        color = controlColor,\n        modifier = modifier,\n      )\n\n    PlayerButton.SHADER_LAB ->\n      ControlsButton(\n        icon = button.icon,\n        onClick = {\n          clickEvent()\n          bridge.toggleLegacyOverlay()\n        },\n        color = controlColor,\n        modifier = modifier,\n      )\n\n    else ->\n      RenderPlayerButton(\n        button = button,\n        chapters = chapters,\n        currentChapter = currentChapter,\n        isSpeedNonOne = isSpeedNonOne,\n        currentZoom = currentZoom,\n        mediaTitle = mediaTitle,\n        hideBackground = hideBackground,\n        decoder = decoder,\n        playbackSpeed = playbackSpeed,\n        onBackPress = onBackPress,\n        onOpenSheet = onOpenSheet,\n        viewModel = viewModel,\n        activity = activity,\n        modifier = modifier,\n        buttonSize = buttonSize,\n      )\n  }\n}\n''')
+
+          for layout in [
+              'app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/PlayerControlsPortrait.kt',
+              'app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/PlayerControlsLandscape.kt',
+          ]:
+              p = Path(layout)
+              text = p.read_text()
+              text = text.replace('buttons.forEach { button ->', 'buttons.withShaderLabAccessButton().forEach { button ->')
+              text = text.replace('RenderPlayerButton(', 'RenderConfigurablePlayerButton(')
+              p.write_text(text)
+
+          test = 'app/src/test/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridgeTest.kt'
+          replace_once(
+              test,
+              '''  @Test\n  fun enginePreparationFailureSurfacesAsBackendErrorBeforeTransportAttach() {''',
+              '''  @Test\n  fun boundedHandshakeReadbackRecoversWhenLoadScriptInitializationIsDelayed() {\n    val transport = FakeTransport()\n    val scheduled = mutableListOf<() -> Unit>()\n    val stages = mutableListOf<String>()\n    val bridge =\n      MpvShaderLabBridge(\n        transport = transport,\n        syncProbe =\n          object : ShaderLabBridgeSyncProbe {\n            override fun record(state: ShaderLabBackendState) = Unit\n\n            override fun stage(name: String, detail: String) {\n              stages += name\n            }\n          },\n        schedule = { _, task -> scheduled += task },\n      )\n\n    bridge.attach()\n    assertFalse(bridge.state.value.ready)\n    assertEquals(5, scheduled.size)\n    assertTrue("load_script_requested" in stages)\n\n    transport.strings[MpvShaderLabBridge.NATIVE_STATE_PROPERTY] =\n      "__ready=1\\n__version=6.1.1-r07-state-1\\n__serial=9"\n    scheduled.first().invoke()\n\n    assertTrue(bridge.state.value.ready)\n    assertEquals(9L, bridge.state.value.snapshotSerial)\n    assertTrue(stages.any { it.startsWith("handshake_retry_") })\n  }\n\n  @Test\n  fun enginePreparationFailureSurfacesAsBackendErrorBeforeTransportAttach() {''',
+          )
+
+          # Self-cleaning: the source commit contains no temporary workflow/trigger files.
+          Path('.github/workflows/r07-device-regression-apply.yml').unlink(missing_ok=True)
+          Path('.github/R07_DEVICE_REGRESSION_TRIGGER').unlink(missing_ok=True)
+          PY
+
+      - name: Validate patched R07 tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :app:testStandardDebugUnitTest --stacktrace
+
+      - name: Commit verified repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "R07 repair Pixel sync and restore OSD access"
+          git push origin HEAD:agent/upstream-refactor
