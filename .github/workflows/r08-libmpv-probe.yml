@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/upstream-refactor
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
@@ -113,7 +116,6 @@ jobs:
           git -C buildscripts/deps/mpv log -2 --oneline
           readelf -lW buildscripts/prefix/arm64/lib/libmpv.so | tee /tmp/libmpv-program-headers.txt
           python3 - <<'PY'
-          import re
           from pathlib import Path
           text = Path('/tmp/libmpv-program-headers.txt').read_text()
           loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
@@ -148,7 +150,6 @@ jobs:
           cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so r08-proof/libmpv-arm64.so
           cp /tmp/libmpv-program-headers.txt r08-proof/libmpv-program-headers.txt
           git -C native/mpv-android/buildscripts/deps/mpv log -2 --format='%H %s' > r08-proof/mpv-commits.txt
-          sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
           find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' -print -exec cp {} r08-proof/Chrovelo-R08-custom-libmpv-arm64-debug.apk \; | head -n 1
           sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
 
