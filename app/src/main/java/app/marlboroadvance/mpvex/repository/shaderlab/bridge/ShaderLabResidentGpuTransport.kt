@@ -12,14 +12,15 @@ import kotlin.math.roundToLong
  *
  * Normal tuning writes one complete glsl-shader-opts value. It never writes a
  * shader file and never changes the glsl-shaders list. Shader attachment is
- * reconciled only when the playback source classification changes or when the
- * legacy Lua compatibility path intentionally changed a runtime shader.
+ * reconciled only when playback classification/comparison state changes or
+ * when the legacy Lua compatibility path intentionally changed a runtime shader.
  */
 internal class ShaderLabResidentGpuTransport(
   private val transport: ShaderLabMpvTransport,
 ) {
   private var authoritative = false
   private var attachedSourceKind = ShaderLabSourceKind.NOT_READY
+  private var originalViewActive = false
   private var lastGoodValues = ShaderLabControlCatalog.normalizeValues(ShaderLabControlCatalog.defaults())
   private var lastGoodOptions = encodeOptions(lastGoodValues)
 
@@ -75,18 +76,28 @@ internal class ShaderLabResidentGpuTransport(
     return merged
   }
 
+  /**
+   * Lua still owns original-property capture/restore for bypass and hold preview.
+   * Mirror that comparison state for the resident shader itself.
+   */
+  fun setOriginalView(active: Boolean, sourceKind: ShaderLabSourceKind) {
+    if (originalViewActive == active && sourceKind == attachedSourceKind) return
+    originalViewActive = active
+    reconcileSource(sourceKind, force = true)
+  }
+
   fun reconcileSource(sourceKind: ShaderLabSourceKind, force: Boolean = false) {
     if (!force && sourceKind == attachedSourceKind) return
 
     when (sourceKind) {
       ShaderLabSourceKind.SDR -> {
-        // Remove only Shader Lab's legacy runtime slots; unrelated user shaders
-        // remain untouched. Reattach the resident file once at this boundary.
         removeManagedShader(LEGACY_RUNTIME_A_PATH)
         removeManagedShader(LEGACY_RUNTIME_B_PATH)
         removeManagedShader(RESIDENT_SHADER_PATH)
-        transport.command("change-list", "glsl-shaders", "append", RESIDENT_SHADER_PATH)
-        transport.command("set", GLSL_SHADER_OPTS_PROPERTY, lastGoodOptions)
+        if (!originalViewActive) {
+          transport.command("change-list", "glsl-shaders", "append", RESIDENT_SHADER_PATH)
+          transport.command("set", GLSL_SHADER_OPTS_PROPERTY, lastGoodOptions)
+        }
       }
       ShaderLabSourceKind.HDR_PQ,
       ShaderLabSourceKind.HDR_HLG -> {
@@ -104,6 +115,7 @@ internal class ShaderLabResidentGpuTransport(
 
   fun onDetached() {
     attachedSourceKind = ShaderLabSourceKind.NOT_READY
+    originalViewActive = false
   }
 
   private fun removeManagedShader(path: String) {
