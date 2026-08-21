@@ -225,17 +225,20 @@ ndk-build -j$cores \
     libshaderc_combined
 
 cd "$builddir"
-cp -vr include/* "$prefix_dir/include"
-cp -v libs/*/$abi/libshaderc.a "$prefix_dir/lib/libshaderc_combined.a"
-mkdir -p "$prefix_dir/lib/pkgconfig"
-cat >"$prefix_dir/lib/pkgconfig/shaderc_combined.pc" <<"END"
+install_root="$prefix_dir/usr/local"
+mkdir -p "$install_root/include" "$install_root/lib/pkgconfig"
+cp -vr include/* "$install_root/include"
+cp -v libs/*/$abi/libshaderc.a "$install_root/lib/libshaderc_combined.a"
+cat >"$install_root/lib/pkgconfig/shaderc_combined.pc" <<"END"
 Name: shaderc_combined
 Description: Android NDK shaderc
 Version: r29
 Libs: -L/usr/local/lib -lshaderc_combined
 Cflags: -I/usr/local/include
 END
-pkg-config --cflags shaderc_combined >/dev/null
+pkg-config --exists shaderc_combined
+pkg-config --cflags shaderc_combined | grep -F -- '-I'
+pkg-config --libs shaderc_combined | grep -F -- '-lshaderc_combined'
 EOF
 chmod +x scripts/shaderc.sh
 
@@ -263,6 +266,8 @@ grep -F -- '--enable-muxer=mov,matroska,mpegts' scripts/ffmpeg.sh
 ! grep -Fq 'force_mpegts' deps/ffmpeg/libavformat/hls.c
 grep -F -- '-Dvk-proc-addr=enabled' scripts/libplacebo.sh
 grep -F -- '-Dvulkan=enabled' scripts/mpv.sh
+grep -F 'install_root="$prefix_dir/usr/local"' scripts/shaderc.sh
+grep -F 'lib/pkgconfig/shaderc_combined.pc' scripts/shaderc.sh
 grep -F '#define SHADER_MAX_PARAMS 64' deps/mpv/video/out/gpu/user_shaders.h
 
 r08_phase native_build
