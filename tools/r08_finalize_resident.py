@@ -120,6 +120,23 @@ end)
 ''',
     )
 
+    # The first ready Lua/native-state snapshot is the authoritative startup
+    # seed. Resident defaults must not overlay it before Android has adopted it.
+    replace_once(
+        bridge,
+        '''    val legacyShaderSwapChanged = decoded.shaderSwapCount != previous.shaderSwapCount
+
+    if (residentGpu.isAuthoritative()) {
+      if (!decoded.applyBusy && (adoptResidentFromLuaOnIdle || legacyShaderSwapChanged)) {
+''',
+        '''    val legacyShaderSwapChanged = decoded.shaderSwapCount != previous.shaderSwapCount
+    val firstReadySnapshot = !previous.ready && decoded.ready
+
+    if (residentGpu.isAuthoritative()) {
+      if (!decoded.applyBusy && (firstReadySnapshot || adoptResidentFromLuaOnIdle || legacyShaderSwapChanged)) {
+''',
+    )
+
     test = ROOT / "app/src/test/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridgeTest.kt"
     replace_once(
         test,
