@@ -55,6 +55,8 @@ No periodic native-state timer was added.
 - `ShaderLabModule` registers one `MpvShaderLabBridge` singleton, binds it as `ShaderLabCommandBackend`, and registers `ShaderLabCommandApi` against that backend.
 - `MPVView.observeProperties()` attaches/re-attaches the bridge whenever libmpv establishes property observation.
 - The R04 manifest version is bumped to `6.1.1-source-r07-state-1`, so the installer repairs/updates the readable Lua engine on the next app start.
+- R07 does not assume the R04 reference `config/mpv.conf` is the user's active mpv configuration. On bridge attachment it first reconciles the R04 engine, then checks for an existing `user-data/p9lab/native-state` publisher. If none is active, it explicitly loads `/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua` and requests the native-state handshake. If a publisher already exists, it reuses it and does not load a duplicate controller.
+- Engine preparation failures are surfaced through the same observable backend error state before MPV transport attachment.
 
 ## Device synchronization proof
 
@@ -73,12 +75,17 @@ The file is diagnostics-only and is never read as runtime state. A valid smoke-t
 
 This proves the round trip: installed Lua engine -> mpv user-data property -> Android MPV observer -> typed decoder -> canonical workspace diagnostic file.
 
-## Validation already completed before this inventory
+## Validation completed before final device smoke
 
 - Isolated bridge/fake-transport unit compile gate: PASS.
-- Guarded patched-tree apply workflow: PASS.
-- Engine manifest integrity on patched tree: PASS.
-- Full `:app:testStandardDebugUnitTest` on patched tree: PASS.
-- Verified wired source commit: `67cf5a49fb03d206879bba75572969c0086d147a`.
+- Guarded Lua/transport wiring workflow: PASS.
+- Engine manifest integrity on the patched tree: PASS.
+- Full `:app:testStandardDebugUnitTest` on the wired tree: PASS.
+- Event-driven state transport commit: `67cf5a49fb03d206879bba75572969c0086d147a`.
+- Initial signed wired build on head `7787fe64896b87c1fe39f2559acbfc2007c68114`: PASS after rerun; normal CI #46: PASS.
+- Activation-gap audit found that R04's reference `config/mpv.conf` is not guaranteed to become the player's active root config.
+- First guarded activation attempt correctly failed compile before commit because Koin type inference was ambiguous; no broken activation code landed.
+- Corrected guarded activation attempt: PASS, including full Shader Lab unit tests.
+- Canonical-controller activation commit: `ce39417e45e01ca5d198a84b8bd4cc0470f88272`.
 
-Full signed `Refactor Dev APK` and normal multi-ABI CI are run after this inventory commit so they validate the exact wired branch state before the Pixel device smoke.
+A documentation-only commit after the activation code is used to trigger final signed `Refactor Dev APK` and normal multi-ABI CI against the exact landed R07 implementation before the Pixel synchronization smoke test.
