@@ -25,6 +25,9 @@ FFMPEG_SHA=5ba2525c7affc29cbd99e6266946b382d3fffe8b
 LIBPLACEBO_SHA=c93aa134ab62365ce1177efff99b8e1e66a818e7
 LIBPLACEBO_TAG=v7.360.0
 LIBPLACEBO_DESCRIBE=v7.360.0-3-gc93aa134
+R07_NDK_TAG=r29
+R07_NDK_REV=29.0.14206865
+R07_NDK_BUILD=14206865
 
 r08_phase harness_checkout
 rm -rf "$HARNESS_DIR"
@@ -33,6 +36,23 @@ git -C "$HARNESS_DIR" checkout "$HARNESS_SHA"
 
 cd "$BUILDSCRIPTS"
 mkdir -p deps
+
+# The accepted R07 libmpv ELF carries .note.android.ident = API 24, r29,
+# build 14206865. The pinned harness defaults to r27c, so override the harness
+# toolchain before it downloads/builds anything. Compiler/NDK drift is not
+# acceptable in a renderer-parity proof.
+r08_phase r07_ndk_pin
+python3 - <<'PY'
+from pathlib import Path
+path = Path('include/depinfo.sh')
+text = path.read_text()
+old = 'v_ndk=r27c\nv_ndk_n=27.2.12479018'
+new = 'v_ndk=r29\nv_ndk_n=29.0.14206865'
+assert text.count(old) == 1, f'NDK pin anchor count={text.count(old)}'
+path.write_text(text.replace(old, new, 1))
+PY
+grep -F 'v_ndk=r29' include/depinfo.sh
+grep -F 'v_ndk_n=29.0.14206865' include/depinfo.sh
 
 # Pre-create the exact FFmpeg tree so the harness cannot substitute its own default.
 r08_phase ffmpeg_pin
@@ -110,13 +130,13 @@ test "$(git rev-list --count "$MPV_BASE_SHA"..HEAD)" = "2"
 git log --oneline --decorate -3
 cd ../..
 
-# Apply the Android Vulkan build topology used by mpv-android's Vulkan support branch,
-# while keeping our exact R07 source revisions.
+# Apply the Android Vulkan build topology used by the accepted R07 renderer,
+# while keeping the exact R07 source revisions and toolchain fingerprint.
 r08_phase vulkan_topology_patch
 python3 - <<'PY'
 from pathlib import Path
 
-# Native API level required by the Android Vulkan build path.
+# Accepted R07 libmpv is Android API 24.
 buildall = Path('buildall.sh')
 text = buildall.read_text()
 old = 'local apilvl=21'
@@ -163,7 +183,7 @@ PY
 r08_phase shaderc_topology
 mkdir -p deps/shaderc
 cat > deps/shaderc/README <<'EOF'
-shaderc sources are supplied by the Android NDK.
+shaderc sources are supplied by the exact Android NDK selected by the parity build.
 EOF
 
 cat > scripts/shaderc.sh <<'EOF'
@@ -202,7 +222,7 @@ mkdir -p "$prefix_dir"/lib/pkgconfig
 cat >"$prefix_dir"/lib/pkgconfig/shaderc_combined.pc <<"END"
 Name: shaderc_combined
 Description: Android NDK shaderc
-Version: 2022.3-unknown
+Version: r29
 Libs: -L/usr/local/lib -lshaderc_combined
 Cflags: -I/usr/local/include
 END
@@ -227,6 +247,8 @@ PY
 
 # Static source/config audit before the expensive build.
 r08_phase static_audit
+grep -F 'v_ndk=r29' include/depinfo.sh
+grep -F 'v_ndk_n=29.0.14206865' include/depinfo.sh
 grep -F 'local apilvl=24' buildall.sh
 grep -F -- '-Wl,-z,common-page-size=16384' buildall.sh
 grep -F 'APP_PLATFORM := android-24' ../lib/src/main/jni/Application.mk
@@ -259,6 +281,12 @@ strings "$LIB" | grep -F 'pl_vulkan_create'
 readelf -dW "$LIB" | tee /tmp/r08-renderer-parity-dynamic.txt
 readelf -dW "$LIB" | grep -F 'Shared library: [libvulkan.so]'
 readelf -lW "$LIB" | tee /tmp/r08-renderer-parity-program-headers.txt
+readelf -p .note.android.ident "$LIB" | tee /tmp/r08-renderer-parity-android-ident.txt
+grep -F 'r29' /tmp/r08-renderer-parity-android-ident.txt
+grep -F '14206865' /tmp/r08-renderer-parity-android-ident.txt
+file "$LIB" | tee /tmp/r08-renderer-parity-file.txt
+grep -F 'for Android 24' /tmp/r08-renderer-parity-file.txt
+grep -F 'built by NDK r29 (14206865)' /tmp/r08-renderer-parity-file.txt
 
 python3 - <<'PY'
 from pathlib import Path
@@ -278,6 +306,10 @@ PY
     echo "ffmpeg=$FFMPEG_SHA"
     echo "libplacebo=$LIBPLACEBO_SHA"
     echo "libplacebo_describe=$LIBPLACEBO_DESCRIBE"
+    echo "ndk=$R07_NDK_TAG"
+    echo "ndk_revision=$R07_NDK_REV"
+    echo "ndk_build=$R07_NDK_BUILD"
+    echo "android_api=24"
     echo "shader_max_params=64"
     echo "vulkan_build_flag=enabled"
     echo "dt_needed_libvulkan=yes"
