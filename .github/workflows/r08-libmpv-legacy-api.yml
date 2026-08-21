@@ -1,0 +1,235 @@
+name: R08 Preserved MPVLib Proof
+
+on:
+  push:
+    branches:
+      - agent/upstream-refactor
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r08-preserved-mpvlib-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build-arm64:
+    if: github.actor != 'github-actions[bot]' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Finalize resident source compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/r08_finalize_resident.py
+          python3 tools/verify_mpvlab_manifest.py
+          grep -F 'p9lab-native-user-save-r08' app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
+          grep -F 'luaStateSnapshot()' app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm lua5.2 unzip
+          python3 -m pip install --user --upgrade 'meson>=1.6.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/meson" --version
+          lua5.2 -e 'assert(loadfile("app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua"))'
+
+      - name: Fetch preserved MPVLib build lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Secozzi/mpv-android.git native/mpv-android
+          cd native/mpv-android
+          git checkout c3bf6f8da2982d5bb9130ce77d695274aa55f7ea
+          test -f app/src/main/java/is/xyz/mpv/MPVLib.kt
+          grep -F 'object MPVLib' app/src/main/java/is/xyz/mpv/MPVLib.kt
+          grep -F 'fun event(eventId: Int, data: MPVNode)' app/src/main/java/is/xyz/mpv/MPVLib.kt
+          grep -F 'external fun command(vararg cmd: String)' app/src/main/java/is/xyz/mpv/MPVLib.kt
+
+      - name: Download dependencies and pin proven renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd native/mpv-android/buildscripts
+          ./download.sh
+          cd deps/mpv
+          git config gc.auto 0
+          git fetch --no-tags origin \
+            d54bad5636924ab3f39cb6e397b94b6aa8a7c433 \
+            91ceffce42534a45705617036b6b2a392a32fc57 \
+            0d655fe66590009e1d77a17581257d677286531a
+          git checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git cherry-pick 91ceffce42534a45705617036b6b2a392a32fc57
+          git cherry-pick 0d655fe66590009e1d77a17581257d677286531a
+          git log -3 --format='%H %s'
+
+      - name: Apply narrow R08 native patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd native/mpv-android
+          python3 - <<'PY'
+          from pathlib import Path
+
+          header = Path('buildscripts/deps/mpv/video/out/gpu/user_shaders.h')
+          text = header.read_text()
+          old = '#define SHADER_MAX_PARAMS 16'
+          assert text.count(old) == 1, text.count(old)
+          header.write_text(text.replace(old, '#define SHADER_MAX_PARAMS 64', 1))
+
+          buildall = Path('buildscripts/buildall.sh')
+          text = buildall.read_text()
+          old = 'export LDFLAGS="-Wl,-O1,--icf=safe -Wl,-z,max-page-size=16384"'
+          new = 'export LDFLAGS="-Wl,-O1,--icf=safe -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"'
+          assert text.count(old) == 1, text.count(old)
+          buildall.write_text(text.replace(old, new, 1))
+          PY
+          grep -F '#define SHADER_MAX_PARAMS 64' buildscripts/deps/mpv/video/out/gpu/user_shaders.h
+          grep -F -- '-Wl,-z,common-page-size=16384' buildscripts/buildall.sh
+
+      - name: Build custom arm64 libmpv and MPVLib AAR
+        shell: bash
+        env:
+          DONT_BUILD_RELEASE: ''
+          GRADLE_OPTS: -Xmx4G
+        run: |
+          set -euo pipefail
+          cd native/mpv-android/buildscripts
+          ./buildall.sh --arch arm64 mpv 2>&1 | tee /tmp/r08-native-build.log
+          ./buildall.sh --arch arm64 mpv-android 2>&1 | tee -a /tmp/r08-native-build.log
+          AAR=$(find ../app/build/outputs/aar -type f -name '*release.aar' | head -n 1)
+          test -n "$AAR"
+          echo "AAR=$AAR" >> "$GITHUB_ENV"
+          echo "Built AAR: $AAR"
+
+      - name: Verify preserved API and all 16 KB native payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r08-aar
+          unzip -q "$AAR" -d /tmp/r08-aar
+          jar tf /tmp/r08-aar/classes.jar | grep -F 'is/xyz/mpv/MPVLib.class'
+          jar tf /tmp/r08-aar/classes.jar | grep -F 'is/xyz/mpv/MPVNode.class'
+          grep -F '#define SHADER_MAX_PARAMS 64' native/mpv-android/buildscripts/deps/mpv/video/out/gpu/user_shaders.h
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          libs = sorted(Path('/tmp/r08-aar').rglob('*.so'))
+          assert libs, 'AAR contains no native shared libraries'
+          failures = []
+          for lib in libs:
+              text = subprocess.check_output(['readelf', '-lW', str(lib)], text=True)
+              loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
+              if not loads:
+                  failures.append(f'{lib}: no LOAD segments')
+                  continue
+              for line in loads:
+                  align = int(line.split()[-1], 16)
+                  if align < 0x4000:
+                      failures.append(f'{lib}: {line}')
+          assert not failures, '16 KB alignment failures:\n' + '\n'.join(failures)
+          print(f'16 KB alignment PASS for {len(libs)} AAR shared libraries')
+          PY
+
+      - name: Compile Chrovelo against preserved custom AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$AAR" app/libs/mpv-android-lib-v0.0.1.aar
+          python3 tools/verify_mpvlab_manifest.py
+          python3 - <<'PY'
+          from pathlib import Path
+          shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
+          assert '@@' not in shader, 'resident shader contains unresolved template token'
+          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
+          print('Resident shader PARAM audit PASS: 39')
+          PY
+          chmod +x ./gradlew
+          ./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --stacktrace 2>&1 | tee /tmp/r08-chrovelo-gradle.log
+
+      - name: Package proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r08-proof
+          cp "$AAR" r08-proof/Chrovelo-R08-custom-mpvlib-arm64.aar
+          cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so r08-proof/libmpv-arm64.so
+          cp /tmp/r08-native-build.log r08-proof/native-build.log
+          cp /tmp/r08-chrovelo-gradle.log r08-proof/chrovelo-gradle.log
+          git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' > r08-proof/mpv-commits.txt
+          find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' -print -exec cp {} r08-proof/Chrovelo-R08-custom-libmpv-arm64-debug.apk \; | head -n 1
+          sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
+
+      - name: Upload R08 proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrovelo-R08-preserved-MPVLib-proof-${{ github.sha }}
+          path: r08-proof/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p r08-failure
+          cp /tmp/r08-native-build.log r08-failure/native-build.log 2>/dev/null || true
+          cp /tmp/r08-chrovelo-gradle.log r08-failure/chrovelo-gradle.log 2>/dev/null || true
+          if [ -n "${AAR:-}" ] && [ -f "$AAR" ]; then
+            cp "$AAR" r08-failure/custom-mpvlib.aar
+            mkdir -p /tmp/r08-failure-aar
+            unzip -q "$AAR" -d /tmp/r08-failure-aar || true
+            jar tf /tmp/r08-failure-aar/classes.jar > r08-failure/classes.txt 2>&1 || true
+          fi
+          find native/mpv-android -type f -name 'meson-log.txt' -print | while read -r log; do
+            dest="r08-failure/${log#native/mpv-android/}"
+            mkdir -p "$(dirname "$dest")"
+            cp "$log" "$dest"
+          done
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrovelo-R08-preserved-MPVLib-failure-${{ github.sha }}
+          path: r08-failure/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit validated R08 payload
+        if: >-
+          success() &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/agent/upstream-refactor' &&
+          github.actor != 'github-actions[bot]'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            app/libs/mpv-android-lib-v0.0.1.aar \
+            app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua \
+            app/src/main/assets/mpvlab/source/engine-manifest.json \
+            app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt \
+            app/src/test/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridgeTest.kt
+          if git diff --cached --quiet; then
+            echo 'R08 payload already integrated.'
+            exit 0
+          fi
+          git commit -m 'R08 integrate preserved MPVLib custom renderer'
+          git push origin HEAD:agent/upstream-refactor
