@@ -1,0 +1,68 @@
+name: R07 Lua Startup Diagnose
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  lua-startup:
+    if: github.event.pull_request.head.ref == 'agent/upstream-refactor'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/upstream-refactor
+      - name: Install Lua
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.4
+      - name: Syntax and mocked-mpv startup smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRIPT=app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
+          luac -p "$SCRIPT"
+          cat > "$RUNNER_TEMP/mpv_stub_smoke.lua" <<'LUA'
+          local props = { ["video-params/gamma"] = "bt.1886" }
+          local messages = {}
+          local events = {}
+          local function timer() return { kill = function() end } end
+          local overlay_mt = {
+            __index = {
+              update = function() end,
+              remove = function() end,
+            }
+          }
+          local mp = {}
+          function mp.create_osd_overlay() return setmetatable({data="", res_x=1920, res_y=1080}, overlay_mt) end
+          function mp.get_osd_size() return 1920, 1080 end
+          function mp.get_property(name, default) local v=props[name]; if v==nil then return default end; return tostring(v) end
+          function mp.get_property_number(name, default) local v=props[name]; if type(v)=="number" then return v end; return default end
+          function mp.set_property(name, value) props[name]=value; return true end
+          function mp.set_property_number(name, value) props[name]=value; return true end
+          function mp.command_native() return true, nil end
+          function mp.commandv() return true end
+          function mp.command() return true end
+          function mp.observe_property() return true end
+          function mp.add_forced_key_binding() return true end
+          function mp.add_key_binding() return true end
+          function mp.remove_key_binding() return true end
+          function mp.register_script_message(name, fn) messages[name]=fn end
+          function mp.register_event(name, fn) events[name]=fn end
+          function mp.add_timeout() return timer() end
+          function mp.add_periodic_timer() return timer() end
+          function mp.get_time() return 0 end
+          function mp.osd_message() end
+          function mp.get_script_name() return "pixel9-shader-lab" end
+          package.preload["mp"] = function() return mp end
+          package.preload["mp.msg"] = function() return {info=function() end,warn=function() end,error=function() end,debug=function() end,verbose=function() end} end
+          local ok, err = pcall(dofile, "app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua")
+          if not ok then error("controller startup failed: " .. tostring(err)) end
+          assert(type(messages["p9lab-native-state"]) == "function", "p9lab-native-state was not registered")
+          local state = props["user-data/p9lab/native-state"]
+          assert(type(state) == "string" and state:find("__ready=1", 1, true), "startup did not publish native-state")
+          assert(state:find("__version=6.1.1-r07-state-1", 1, true), "wrong native-state version")
+          print("R07 LUA STARTUP PASS")
+          LUA
+          lua "$RUNNER_TEMP/mpv_stub_smoke.lua"
