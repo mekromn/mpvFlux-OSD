@@ -46,7 +46,9 @@ r08_phase harness_download
 # Replace the harness's floating libplacebo clone with the exact R07 renderer revision.
 # Fetch a small ancestor window plus the release tag because libplacebo embeds
 # `git describe --dirty` in its version string. Code SHA and version fingerprint
-# must both reproduce R07 exactly.
+# must both reproduce R07 exactly. Pin the local abbreviation width because the
+# deliberately tiny shallow object database otherwise chooses seven hex digits,
+# while the proven R07 build embedded eight.
 r08_phase libplacebo_pin
 rm -rf deps/libplacebo
 git init deps/libplacebo
@@ -54,10 +56,13 @@ git -C deps/libplacebo remote add origin https://github.com/haasn/libplacebo.git
 git -C deps/libplacebo fetch --depth=8 origin "$LIBPLACEBO_SHA"
 git -C deps/libplacebo fetch --depth=1 origin "refs/tags/$LIBPLACEBO_TAG:refs/tags/$LIBPLACEBO_TAG"
 git -C deps/libplacebo checkout --detach "$LIBPLACEBO_SHA"
+git -C deps/libplacebo config core.abbrev 8
 git -C deps/libplacebo submodule update --init --recursive --depth=1
 
 test "$(git -C deps/libplacebo rev-parse HEAD)" = "$LIBPLACEBO_SHA"
-test "$(git -C deps/libplacebo describe --dirty)" = "$LIBPLACEBO_DESCRIBE"
+actual_libplacebo_describe="$(git -C deps/libplacebo describe --dirty)"
+echo "libplacebo_describe_actual=$actual_libplacebo_describe"
+test "$actual_libplacebo_describe" = "$LIBPLACEBO_DESCRIBE"
 
 # Reproduce the Android force_mpegts delta against the exact shipped FFmpeg source.
 r08_phase ffmpeg_android_delta
