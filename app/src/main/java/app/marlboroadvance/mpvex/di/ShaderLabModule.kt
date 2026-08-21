@@ -11,7 +11,7 @@ val ShaderLabModule =
   module {
     single { ShaderLabWorkspaceManager(get()) }
     single { ShaderLabEngineInstaller(context = get(), workspaceManager = get()) }
-    single { MpvShaderLabBridge() }
+    single { MpvShaderLabBridge(get<ShaderLabEngineInstaller>()) }
     single<ShaderLabCommandBackend> { get<MpvShaderLabBridge>() }
     single { ShaderLabCommandApi(get()) }
   }

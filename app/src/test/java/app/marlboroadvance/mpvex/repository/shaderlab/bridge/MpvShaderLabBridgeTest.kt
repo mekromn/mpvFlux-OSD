@@ -25,10 +25,53 @@ class MpvShaderLabBridgeTest {
       setOf("sdr-intensity", "brightness", "contrast", "gamma", "saturation", "hue"),
       transport.doubleProperties,
     )
+    assertTrue(
+      transport.commands.contains(
+        listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH),
+      ),
+    )
     assertEquals(
       listOf("script-message", "p9lab-native-state"),
       transport.commands.last(),
     )
+  }
+
+  @Test
+  fun attachReusesExistingNativePublisherWithoutLoadingDuplicateController() {
+    val transport = FakeTransport().apply {
+      strings[MpvShaderLabBridge.NATIVE_STATE_PROPERTY] =
+        "__ready=1\n__version=6.1.1-r07-state-1\n__serial=7"
+    }
+    val bridge = MpvShaderLabBridge(transport)
+
+    bridge.attach()
+
+    assertTrue(bridge.state.value.ready)
+    assertEquals(7L, bridge.state.value.snapshotSerial)
+    assertFalse(
+      transport.commands.contains(
+        listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH),
+      ),
+    )
+    assertEquals(
+      listOf("script-message", "p9lab-native-state"),
+      transport.commands.last(),
+    )
+  }
+
+  @Test
+  fun enginePreparationFailureSurfacesAsBackendErrorBeforeTransportAttach() {
+    val transport = FakeTransport()
+    val bridge = MpvShaderLabBridge(
+      transport = transport,
+      prepareEngine = { error("synthetic engine preparation failure") },
+    )
+
+    bridge.attach()
+
+    assertFalse(bridge.state.value.connected)
+    assertEquals("synthetic engine preparation failure", bridge.state.value.lastError)
+    assertTrue(transport.commands.isEmpty())
   }
 
   @Test

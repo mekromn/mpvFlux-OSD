@@ -1,5 +1,7 @@
 package app.marlboroadvance.mpvex.repository.shaderlab.bridge
 
+import app.marlboroadvance.mpvex.repository.shaderlab.ShaderLabEngineInstallState
+import app.marlboroadvance.mpvex.repository.shaderlab.ShaderLabEngineInstaller
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlCatalog
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlId
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlKind
@@ -154,8 +156,21 @@ internal class LibMpvShaderLabTransport : ShaderLabMpvTransport {
 class MpvShaderLabBridge internal constructor(
   private val transport: ShaderLabMpvTransport,
   private val syncProbe: ShaderLabBridgeSyncProbe = NoOpShaderLabBridgeSyncProbe,
+  private val prepareEngine: () -> Unit = {},
 ) : ShaderLabCommandBackend {
-  constructor() : this(LibMpvShaderLabTransport(), FileShaderLabBridgeSyncProbe())
+  constructor(engineInstaller: ShaderLabEngineInstaller) : this(
+    transport = LibMpvShaderLabTransport(),
+    syncProbe = FileShaderLabBridgeSyncProbe(),
+    prepareEngine = {
+      when (val installState = engineInstaller.installOrRepair()) {
+        is ShaderLabEngineInstallState.Success -> Unit
+        is ShaderLabEngineInstallState.Blocked ->
+          error("Shader Lab workspace unavailable: ${installState.workspaceState}")
+        is ShaderLabEngineInstallState.Failure -> error(installState.reason)
+        ShaderLabEngineInstallState.Idle -> error("Shader Lab engine installer remained idle")
+      }
+    },
+  )
 
   private val commandLock = Any()
   private val _state = MutableStateFlow(ShaderLabBackendState())
@@ -170,6 +185,7 @@ class MpvShaderLabBridge internal constructor(
   fun attach() {
     synchronized(commandLock) {
       runCatching {
+        prepareEngine()
         if (attached) {
           transport.detach()
         }
@@ -181,7 +197,8 @@ class MpvShaderLabBridge internal constructor(
         transport.observeString(SOURCE_GAMMA_PROPERTY)
         MPV_PROPERTY_CONTROLS.forEach { transport.observeDouble(it.id.legacyKey) }
 
-        transport.getString(NATIVE_STATE_PROPERTY)
+        val nativeState = transport.getString(NATIVE_STATE_PROPERTY)
+        nativeState
           ?.takeIf { it.isNotBlank() }
           ?.let(::consumeNativeState)
         transport.getString(SOURCE_GAMMA_PROPERTY)?.let(::consumeSourceGamma)
@@ -189,6 +206,14 @@ class MpvShaderLabBridge internal constructor(
           transport.getDouble(spec.id.legacyKey)?.let { consumeDirectControlValue(spec.id, it) }
         }
 
+        // R04 owns the readable controller in the canonical workspace, but its
+        // reference mpv.conf is intentionally not forced into the user's active
+        // config. R07 therefore activates the controller explicitly only when
+        // no native-state publisher is already present. This makes the bridge
+        // work on a clean install without duplicating a user-configured script.
+        if (nativeState.isNullOrBlank()) {
+          transport.command("load-script", CONTROLLER_PATH)
+        }
         transport.command("script-message", "p9lab-native-state")
         _events.tryEmit(ShaderLabBridgeEvent.Attached)
       }.onFailure(::recordTransportFailure)
@@ -350,6 +375,7 @@ class MpvShaderLabBridge internal constructor(
   companion object {
     const val NATIVE_STATE_PROPERTY = "user-data/p9lab/native-state"
     const val SOURCE_GAMMA_PROPERTY = "video-params/gamma"
+    const val CONTROLLER_PATH = "/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua"
 
     private val MPV_PROPERTY_CONTROLS =
       ShaderLabControlCatalog.controls.filter { it.kind == ShaderLabControlKind.MPV_PROPERTY }
