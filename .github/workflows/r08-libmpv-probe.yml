@@ -76,14 +76,21 @@ jobs:
           cd native/mpv-android
           git checkout fd17fb02cfb8c8b5c12621c2c90769685d635d91
 
-      - name: Fetch dependencies and pin proven renderer baseline
+      - name: Fetch dependencies and pin shipped FFmpeg plus proven renderer baseline
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
           set -euo pipefail
           cd native/mpv-android/buildscripts
           ./download.sh
-          cd deps/mpv
+
+          cd deps/ffmpeg
+          git config gc.auto 0
+          git fetch --no-tags --depth=1 origin 5ba2525c7affc29cbd99e6266946b382d3fffe8b
+          git checkout --detach 5ba2525c7affc29cbd99e6266946b382d3fffe8b
+          git log -1 --format='%H %s' | tee /tmp/r08-ffmpeg-commit.txt
+
+          cd ../mpv
           git config gc.auto 0
           git fetch --no-tags --depth=3 origin \
             d54bad5636924ab3f39cb6e397b94b6aa8a7c433 \
@@ -138,6 +145,7 @@ jobs:
           test -f native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so
           grep -F '#define SHADER_MAX_PARAMS 64' native/mpv-android/buildscripts/deps/mpv/video/out/gpu/user_shaders.h
           git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' | tee /tmp/r08-mpv-commits.txt
+          test "$(git -C native/mpv-android/buildscripts/deps/ffmpeg rev-parse HEAD)" = '5ba2525c7affc29cbd99e6266946b382d3fffe8b'
           readelf -lW native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so | tee /tmp/r08-libmpv-program-headers.txt
           python3 - <<'PY'
           from pathlib import Path
@@ -149,7 +157,7 @@ jobs:
           print('Custom libmpv 16 KB ELF LOAD alignment PASS')
           PY
 
-      - name: Preserve MPVLib wrapper and replace only libmpv
+      - name: Preserve MPVLib wrapper and replace only ABI-matched libmpv
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
@@ -162,12 +170,15 @@ jobs:
           test -f native/base-aar/classes.jar
           test -f native/base-aar/jni/arm64-v8a/libmpv.so
           test -f native/base-aar/jni/arm64-v8a/libplayer.so
+          test -f native/base-aar/jni/arm64-v8a/libavdevice.so
 
           jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
           jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
 
-          echo 'Existing renderer identity:'
-          strings native/base-aar/jni/arm64-v8a/libmpv.so | grep -m1 -E 'd54bad563|mpv 0\.41|0\.41\.0' || true
+          # Hard compatibility invariant: the shipped AAR and replacement build
+          # must share both the proven d54 mpv baseline and exact FFmpeg source.
+          strings native/base-aar/jni/arm64-v8a/libmpv.so | grep -F 'mpv v0.41.0-224-gd54bad563'
+          strings native/base-aar/jni/arm64-v8a/libavdevice.so | grep -F 'FFmpeg version N-122998-g5ba2525c7a'
           sha256sum native/base-aar/classes.jar native/base-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-wrapper-before.sha256
 
           cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so native/base-aar/jni/arm64-v8a/libmpv.so
@@ -226,6 +237,7 @@ jobs:
           mkdir -p r08-failure
           cp /tmp/r08-native-build.log r08-failure/native-build.log 2>/dev/null || true
           cp /tmp/r08-gradle.log r08-failure/gradle.log 2>/dev/null || true
+          cp /tmp/r08-ffmpeg-commit.txt r08-failure/ffmpeg-commit.txt 2>/dev/null || true
           cp /tmp/r08-mpv-commits.txt r08-failure/mpv-commits.txt 2>/dev/null || true
           cp /tmp/r08-libmpv-program-headers.txt r08-failure/libmpv-program-headers.txt 2>/dev/null || true
           cp /tmp/r08-aar-elf-alignment.txt r08-failure/aar-elf-alignment.txt 2>/dev/null || true
@@ -254,6 +266,7 @@ jobs:
           cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so r08-proof/libmpv-arm64.so
           cp /tmp/r08-libmpv-program-headers.txt r08-proof/libmpv-program-headers.txt
           cp /tmp/r08-aar-elf-alignment.txt r08-proof/aar-elf-alignment.txt
+          cp /tmp/r08-ffmpeg-commit.txt r08-proof/ffmpeg-commit.txt
           cp /tmp/r08-mpv-commits.txt r08-proof/mpv-commits.txt
           APK=$(find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' | head -n 1)
           if [[ -z "$APK" ]]; then
