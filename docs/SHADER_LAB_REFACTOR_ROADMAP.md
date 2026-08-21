@@ -126,7 +126,7 @@ Status values: `DONE`, `TODO`, `IN_PROGRESS`, `BLOCKED`, `SKIPPED`.
 
 ### Current pointer
 
-`CURRENT_STEP = R06`
+`CURRENT_STEP = R07`
 
 ---
 
@@ -236,38 +236,50 @@ Normal CI: run #27 / `32409643876` — **PASS**.
 
 ## R06 — Build semantic Shader Lab command API
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Goal:** create one input-neutral API used by touch, TV remote, presets, and tests.
 
-**Work:**
+**Completed work:**
 
-Define semantic commands/intents such as:
+- Added `ShaderLabCommand` as the single typed semantic intent surface.
+- Implemented `SetValue`, `Adjust`, `SelectGroup`, `SelectControl`, `ToggleBypass`, `PreviewOriginalStart`, `PreviewOriginalEnd`, `RevertVideoStart`, `ResetAll`, user preset save/load/clear, built-in preset load, `Morph`, `SetDiagnosticView`, complete state save/load, and the legacy preview-toggle fallback.
+- Added `ShaderLabAdjustDirection` and typed `ShaderLabDiagnosticView` (`OFF`, `GAMUT`, `LUMA`, `BOTH`).
+- Added `ShaderLabCommandBackend`, a transport-neutral runtime boundary with no MPV command names, Lua `script-message` strings, Android UI types, key events, pointer events, or Compose dependency.
+- Added typed command effects/results including applied, rejected, and backend-failure outcomes.
+- `SetValue` and `Adjust` reuse the R05 catalog for clamping, exact fine/normal/coarse step sizes, and ordered-pair normalization.
+- Value normalization only writes the addressed control plus directly related ordered-pair members; one command cannot silently repair unrelated controls.
+- `SelectGroup` and `SelectControl` are local semantic effects and do not touch the runtime backend.
+- Preview comparison has explicit start/end commands so later pointer/key lifecycle code does not depend on a toggle.
+- Preset commands use bounded typed preset IDs rather than raw integer slots.
+- Morph accepts typed user/built-in endpoints, rejects `VideoStart` as a morph endpoint, rejects non-finite amounts, and clamps amount to `0.0..1.0`.
+- Destructive confirmation policy reuses the R05 action metadata instead of maintaining a second destructive-action table.
+- Backend exceptions are surfaced as typed `Failed` results rather than leaking transport exceptions through callers.
 
-- `SetValue(control, value)`
-- `Adjust(control, direction, stepMode)`
-- `SelectGroup(group)`
-- `SelectControl(control)`
-- `ToggleBypass`
-- `PreviewOriginalStart`
-- `PreviewOriginalEnd`
-- `RevertVideoStart`
-- `ResetAll`
-- `SaveUserPreset(slot)`
-- `LoadUserPreset(slot)`
-- `ClearUserPreset(slot)`
-- `LoadBuiltInPreset(slot)`
-- `Morph(from, to, amount)`
-- `SetDiagnosticView(mode)`
+**Relevant commits:**
 
-Touch/TV code must call this API rather than MPV directly.
+- `9528eb33b4afadf3b59ff514439a7e78aad2e0ec` — semantic command API/backend boundary.
+- `d693d238fa6e8c6d5e71d08f248d2d73b4ce2ffd` — fake-backend semantic command tests; validated R06 code head.
 
 **Acceptance criteria:**
 
-- Semantic API has no Compose dependency.
-- Commands can be unit-tested with a fake backend.
+- Semantic API has no Compose dependency: **PASS** — source audit confirms catalog-only imports and no UI/MPV transport types.
+- Commands can be unit-tested with a fake backend: **PASS**.
 
-**Validation:** unit tests.
+**Validation:**
+
+- `ShaderLabCommandApiTest`: **PASS** — clamping, ordered-pair normalization, exact step modes, selection effects, preview start/end/fallback, typed preset/system routing, morph validation/clamping, typed diagnostics, destructive policy, invalid-value rejection, and backend-failure propagation.
+- `Refactor Dev APK` run #87 / run ID `32432134649`, job `96625836155`: **PASS**.
+  - PR merge-test SHA: `766c7793107d65fb0407524e015fe5ccf3e2b4e8`.
+  - unit tests: **PASS** (`BUILD SUCCESSFUL`).
+  - signed Debug build: **PASS**.
+  - package/version/signing certificate verification: **PASS**.
+  - arm64 versionCode `1787271522`; universal versionCode `1787271520`.
+  - persistent signer SHA-256 remains `b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2`.
+  - arm64 artifact `9429556059`; universal artifact `9429556615`.
+- `CI/CD Build` run #36 / run ID `32432134575`, job `96625836756`: **PASS**.
+  - Gradle build: **PASS**.
+  - arm64, armeabi-v7a, universal, x86, and x86_64 uploads: **PASS**.
 
 ---
 
