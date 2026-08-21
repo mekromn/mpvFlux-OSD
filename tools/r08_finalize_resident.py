@@ -103,20 +103,16 @@ end)
     )
     replace_once(
         bridge,
-        '''    private fun formatDouble(value: Double): String = String.format(Locale.US, "%.17g", value)
-
-    private fun sourceKind(gamma: String): ShaderLabSourceKind =
+        '''  companion object {
 ''',
-        '''    private fun formatDouble(value: Double): String = String.format(Locale.US, "%.17g", value)
-
-    private fun luaStateSnapshot(): String {
-      val normalized = ShaderLabControlCatalog.normalizeValues(_state.value.values)
-      return ShaderLabControlCatalog.controls.joinToString(";") { spec ->
-        "${spec.id.legacyKey}=${formatDouble(normalized.getValue(spec.id))}"
-      }
+        '''  private fun luaStateSnapshot(): String {
+    val normalized = ShaderLabControlCatalog.normalizeValues(_state.value.values)
+    return ShaderLabControlCatalog.controls.joinToString(";") { spec ->
+      "${spec.id.legacyKey}=${formatDouble(normalized.getValue(spec.id))}"
     }
+  }
 
-    private fun sourceKind(gamma: String): ShaderLabSourceKind =
+  companion object {
 ''',
     )
 
