@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -17,36 +18,104 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  observe-push:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report matching push proof run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Looking for R08 push proof run for head SHA: $HEAD_SHA"
+          for attempt in $(seq 1 24); do
+            json="$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/r08-libmpv-probe.yml/runs" \
+              -f branch=agent/upstream-refactor \
+              -f event=push \
+              -f per_page=20)"
+            run_id="$(printf '%s' "$json" | python3 -c '
+import json, os, sys
+obj=json.load(sys.stdin)
+sha=os.environ["HEAD_SHA"]
+for run in obj.get("workflow_runs", []):
+    if run.get("head_sha") == sha:
+        print(run.get("id", ""))
+        break
+')"
+            if [[ -n "$run_id" ]]; then
+              echo "PUSH_RUN_ID=$run_id"
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+                --jq '"PUSH_RUN_STATUS=\(.status) PUSH_RUN_CONCLUSION=\(.conclusion) URL=\(.html_url)"'
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+                --jq '.jobs[] | "PUSH_JOB_ID=\(.id) NAME=\(.name) STATUS=\(.status) CONCLUSION=\(.conclusion)"'
+              exit 0
+            fi
+            echo "Push proof run not indexed yet (attempt $attempt/24)."
+            sleep 5
+          done
+          echo '::error::No matching R08 push proof run found.'
+          exit 1
+
   build-arm64:
-    if: github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.actor != 'github-actions[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Check R08 trigger
+      - name: Check R08 renderer-parity trigger
         id: trigger
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || -f .github/R08_LIBMPV_PROBE_TRIGGER ]]; then
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || -f .github/R08_RENDERER_PARITY_TRIGGER ]]; then
             echo 'enabled=yes' >> "$GITHUB_OUTPUT"
           else
             echo 'enabled=no' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Finalize R08 resident source compatibility
+      - name: Build metadata
+        if: steps.trigger.outputs.enabled == 'yes'
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "short_sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base_version_code=$(( $(date +%s) / 10 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        if: steps.trigger.outputs.enabled == 'yes'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Install native build dependencies
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
           set -euo pipefail
-          python3 tools/r08_finalize_resident.py
-          grep -F 'p9lab-native-user-save-r08' app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
-          grep -F 'p9lab-native-save-state-r08' app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
-          grep -F 'luaStateSnapshot()' app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt
+          sudo apt-get update -qq
+          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm lua5.2 zip unzip binutils wget
+          python3 -m pip install --user --upgrade 'meson>=1.6.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/meson" --version
+
+      - name: Verify resident source
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
           python3 tools/verify_mpvlab_manifest.py
+          lua5.2 -e 'assert(loadfile("app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua"))'
           python3 - <<'PY'
           from pathlib import Path
           shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
@@ -55,210 +124,173 @@ jobs:
           print('Resident shader PARAM audit PASS: 39')
           PY
 
-      - name: Install native build dependencies
+      - name: Rebuild exact R07 Vulkan renderer plus R08 PARAM support
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm lua5.2 zip unzip binutils
-          python3 -m pip install --user --upgrade 'meson>=1.6.1'
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/meson" --version
-          lua5.2 -e 'assert(loadfile("app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua"))'
+          bash tools/r08_renderer_parity_rebuild.sh
 
-      - name: Fetch pinned native build harness
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone https://github.com/Secozzi/mpv-android.git native/mpv-android
-          cd native/mpv-android
-          git checkout fd17fb02cfb8c8b5c12621c2c90769685d635d91
-
-      - name: Fetch dependencies and pin shipped FFmpeg plus proven renderer baseline
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd native/mpv-android/buildscripts
-
-          # Pre-create the exact shipped FFmpeg revision so download.sh cannot
-          # create/patch its n7.1 default tree first.
-          mkdir -p deps
-          git clone --filter=blob:none --no-checkout --shallow-since='2026-02-20T00:00:00Z' \
-            https://github.com/FFmpeg/FFmpeg.git deps/ffmpeg
-          git -C deps/ffmpeg checkout --detach 5ba2525c7affc29cbd99e6266946b382d3fffe8b
-
-          ./download.sh
-
-          # Reproduce the harness's Android force_mpegts behavior with exact,
-          # asserted edits against the shipped FFmpeg source layout.
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('deps/ffmpeg/libavformat/hls.c')
-          text = path.read_text()
-
-          old = '    int extension_picky;\n    int max_reload;\n    int http_persistent;'
-          new = '    int extension_picky;\n    int max_reload;\n    int force_mpegts;\n    int http_persistent;'
-          assert text.count(old) == 1, f'struct anchor count={text.count(old)}'
-          text = text.replace(old, new, 1)
-
-          old = '            in_fmt = av_find_input_format(pls->audio_setup_info.codec_id == AV_CODEC_ID_AAC ? "aac" :\n                                          pls->audio_setup_info.codec_id == AV_CODEC_ID_AC3 ? "ac3" : "eac3");\n        } else {\n            pls->ctx->probesize = s->probesize > 0 ? s->probesize : 1024 * 4;'
-          new = '            in_fmt = av_find_input_format(pls->audio_setup_info.codec_id == AV_CODEC_ID_AAC ? "aac" :\n                                          pls->audio_setup_info.codec_id == AV_CODEC_ID_AC3 ? "ac3" : "eac3");\n        } else if (c->force_mpegts > 0) {\n            in_fmt = av_find_input_format("mpegts");\n        } else {\n            pls->ctx->probesize = s->probesize > 0 ? s->probesize : 1024 * 4;'
-          assert text.count(old) == 1, f'probe anchor count={text.count(old)}'
-          text = text.replace(old, new, 1)
-
-          old = '    {"m3u8_hold_counters", "The maximum number of times to load m3u8 when it refreshes without new segments",\n        OFFSET(m3u8_hold_counters), AV_OPT_TYPE_INT, {.i64 = 1000}, 0, INT_MAX, FLAGS},\n    {"http_persistent", "Use persistent HTTP connections",'
-          new = '    {"m3u8_hold_counters", "The maximum number of times to load m3u8 when it refreshes without new segments",\n        OFFSET(m3u8_hold_counters), AV_OPT_TYPE_INT, {.i64 = 1000}, 0, INT_MAX, FLAGS},\n    {"force_mpegts", "Force use of mpegts format for hls segments",\n        OFFSET(force_mpegts), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, FLAGS},\n    {"http_persistent", "Use persistent HTTP connections",'
-          assert text.count(old) == 1, f'option anchor count={text.count(old)}'
-          text = text.replace(old, new, 1)
-
-          path.write_text(text)
-          PY
-
-          test "$(git -C deps/ffmpeg rev-parse HEAD)" = '5ba2525c7affc29cbd99e6266946b382d3fffe8b'
-          git -C deps/ffmpeg diff --check
-          git -C deps/ffmpeg log -1 --format='%H %s' | tee /tmp/r08-ffmpeg-commit.txt
-          grep -F 'int force_mpegts;' deps/ffmpeg/libavformat/hls.c
-          grep -F 'else if (c->force_mpegts > 0)' deps/ffmpeg/libavformat/hls.c
-
-          cd deps/mpv
-          git config gc.auto 0
-          git fetch --no-tags --depth=3 origin \
-            d54bad5636924ab3f39cb6e397b94b6aa8a7c433 \
-            91ceffce42534a45705617036b6b2a392a32fc57 \
-            0d655fe66590009e1d77a17581257d677286531a
-          git checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git cherry-pick 91ceffce42534a45705617036b6b2a392a32fc57
-          git cherry-pick 0d655fe66590009e1d77a17581257d677286531a
-
-      - name: Apply Chrovelo narrow native patches
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd native/mpv-android
-          python3 - <<'PY'
-          from pathlib import Path
-
-          header = Path('buildscripts/deps/mpv/video/out/gpu/user_shaders.h')
-          text = header.read_text()
-          old = '#define SHADER_MAX_PARAMS 16'
-          assert text.count(old) == 1, text.count(old)
-          header.write_text(text.replace(old, '#define SHADER_MAX_PARAMS 64', 1))
-
-          buildall = Path('buildscripts/buildall.sh')
-          text = buildall.read_text()
-          old = 'export LDFLAGS="-Wl,-O1,--icf=safe -Wl,-z,max-page-size=16384"'
-          new = 'export LDFLAGS="-Wl,-O1,--icf=safe -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"'
-          assert text.count(old) == 1, text.count(old)
-          buildall.write_text(text.replace(old, new, 1))
-          PY
-          grep -F '#define SHADER_MAX_PARAMS 64' buildscripts/deps/mpv/video/out/gpu/user_shaders.h
-          grep -F -- '-Wl,-z,common-page-size=16384' buildscripts/buildall.sh
-
-      - name: Build arm64 custom libmpv
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        env:
-          GRADLE_OPTS: -Xmx4G
-        run: |
-          set -euo pipefail
-          cd native/mpv-android/buildscripts
-          ./buildall.sh --arch arm64 mpv 2>&1 | tee /tmp/r08-native-build.log
-
-      - name: Verify PARAM feature and custom libmpv alignment
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so
-          grep -F '#define SHADER_MAX_PARAMS 64' native/mpv-android/buildscripts/deps/mpv/video/out/gpu/user_shaders.h
-          git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' | tee /tmp/r08-mpv-commits.txt
-          test "$(git -C native/mpv-android/buildscripts/deps/ffmpeg rev-parse HEAD)" = '5ba2525c7affc29cbd99e6266946b382d3fffe8b'
-          readelf -lW native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so | tee /tmp/r08-libmpv-program-headers.txt
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path('/tmp/r08-libmpv-program-headers.txt').read_text()
-          loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
-          assert loads, 'no LOAD segments found in custom libmpv'
-          bad = [line for line in loads if int(line.split()[-1], 16) < 0x4000]
-          assert not bad, 'custom libmpv LOAD segments below 16 KB alignment:\n' + '\n'.join(bad)
-          print('Custom libmpv 16 KB ELF LOAD alignment PASS')
-          PY
-
-      - name: Preserve MPVLib wrapper and replace only ABI-matched libmpv
+      - name: Build renderer-parity MPVLib AAR
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
           set -euo pipefail
           BASE_AAR=app/libs/mpv-android-lib-v0.0.1.aar
+          NEW_LIB=native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so
           test -f "$BASE_AAR"
-          rm -rf native/base-aar
-          mkdir -p native/base-aar
-          unzip -q "$BASE_AAR" -d native/base-aar
-          test -f native/base-aar/classes.jar
-          test -f native/base-aar/jni/arm64-v8a/libmpv.so
-          test -f native/base-aar/jni/arm64-v8a/libplayer.so
-          test -f native/base-aar/jni/arm64-v8a/libavdevice.so
+          test -f "$NEW_LIB"
 
-          jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
-          jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
-          strings native/base-aar/jni/arm64-v8a/libmpv.so | grep -F 'mpv v0.41.0-224-gd54bad563'
-          strings native/base-aar/jni/arm64-v8a/libavdevice.so | grep -F 'FFmpeg version N-122998-g5ba2525c7a'
-          sha256sum native/base-aar/classes.jar native/base-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-wrapper-before.sha256
+          rm -rf native/parity-aar
+          mkdir -p native/parity-aar
+          unzip -q "$BASE_AAR" -d native/parity-aar
 
-          cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so native/base-aar/jni/arm64-v8a/libmpv.so
-          rm -f native/Chrovelo-R08-custom-libmpv-arm64.aar
-          (cd native/base-aar && zip -q -r ../Chrovelo-R08-custom-libmpv-arm64.aar .)
+          test -f native/parity-aar/classes.jar
+          test -f native/parity-aar/jni/arm64-v8a/libplayer.so
+          test -f native/parity-aar/jni/arm64-v8a/libavdevice.so
+          test -f native/parity-aar/jni/arm64-v8a/libxml2.so
+          jar tf native/parity-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
+          jar tf native/parity-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
+          strings native/parity-aar/jni/arm64-v8a/libavdevice.so | grep -F 'FFmpeg version N-122998-g5ba2525c7a'
+          sha256sum native/parity-aar/classes.jar native/parity-aar/jni/arm64-v8a/libplayer.so > /tmp/r08-wrapper-before.sha256
 
-          unzip -p native/Chrovelo-R08-custom-libmpv-arm64.aar classes.jar > /tmp/r08-classes.jar
-          jar tf /tmp/r08-classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
-          jar tf /tmp/r08-classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
-          sha256sum native/base-aar/classes.jar native/base-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-wrapper-after.sha256
-          diff -u /tmp/r08-wrapper-before.sha256 /tmp/r08-wrapper-after.sha256
+          cp "$NEW_LIB" native/parity-aar/jni/arm64-v8a/libmpv.so
 
-      - name: Verify every arm64 ELF in patched AAR is 16 KB compatible
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        run: |
-          set -euo pipefail
+          lib=native/parity-aar/jni/arm64-v8a/libmpv.so
+          strings "$lib" | grep -F 'N-122998-g5ba2525c7a'
+          strings "$lib" | grep -F 'v7.360.0 (v7.360.0-3-gc93aa134)'
+          strings "$lib" | grep -F -- '-Dvulkan=enabled'
+          strings "$lib" | grep -F 'pl_vulkan_create'
+          readelf -dW "$lib" | grep -F 'Shared library: [libvulkan.so]'
+          readelf -dW "$lib" | grep -F 'Shared library: [libxml2.so]'
+
           python3 - <<'PY'
           from pathlib import Path
+          import re
           import subprocess
 
-          root = Path('native/base-aar/jni/arm64-v8a')
-          sos = sorted(root.glob('*.so'))
-          assert sos, 'patched AAR contains no arm64 shared libraries'
+          root = Path('native/parity-aar/jni/arm64-v8a')
+          local = {p.name for p in root.glob('*.so')}
+          system = {
+              'libc.so', 'libm.so', 'libdl.so', 'liblog.so', 'libandroid.so',
+              'libz.so', 'libEGL.so', 'libGLESv2.so', 'libGLESv3.so',
+              'libOpenSLES.so', 'libmediandk.so', 'libvulkan.so', 'libaaudio.so',
+              'libjnigraphics.so', 'libnativewindow.so',
+          }
+          missing = []
           report = []
-          bad = []
-          for so in sos:
-              text = subprocess.check_output(['readelf', '-lW', str(so)], text=True)
-              loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
-              assert loads, f'{so}: no LOAD segments'
+          for so in sorted(root.glob('*.so')):
+              dynamic = subprocess.check_output(['readelf', '-dW', str(so)], text=True)
+              needed = re.findall(r'Shared library: \[([^]]+)\]', dynamic)
+              report.append(f"{so.name}: {', '.join(needed) if needed else '<none>'}")
+              for dep in needed:
+                  if dep not in local and dep not in system:
+                      missing.append(f'{so.name} -> {dep}')
+
+              program = subprocess.check_output(['readelf', '-lW', str(so)], text=True)
+              loads = [line for line in program.splitlines() if line.lstrip().startswith('LOAD')]
+              assert loads, f'{so.name}: no LOAD segments'
               minimum = min(int(line.split()[-1], 16) for line in loads)
-              report.append(f'{so.name}: min LOAD align=0x{minimum:x}')
-              if minimum < 0x4000:
-                  bad.append(f'{so.name}: 0x{minimum:x}')
-          Path('/tmp/r08-aar-elf-alignment.txt').write_text('\n'.join(report) + '\n')
+              assert minimum >= 0x4000, f'{so.name}: LOAD alignment 0x{minimum:x} < 0x4000'
+
+          Path('/tmp/r08-parity-aar-needed.txt').write_text('\n'.join(report) + '\n')
           print('\n'.join(report))
-          assert not bad, 'arm64 ELF files below 16 KB alignment: ' + ', '.join(bad)
-          print('Patched AAR arm64 16 KB alignment PASS')
+          assert not missing, 'unresolved packaged ELF dependencies: ' + ', '.join(missing)
+          assert 'libxml2.so' in local, 'libxml2.so runtime repair missing'
+          print('Renderer-parity AAR dependency closure + 16 KB alignment PASS')
           PY
 
-      - name: Compile and test Chrovelo against patched AAR
+          rm -f native/mpv-android-lib-v0.0.1.renderer-parity.aar
+          (cd native/parity-aar && zip -q -r ../mpv-android-lib-v0.0.1.renderer-parity.aar .)
+          cp native/mpv-android-lib-v0.0.1.renderer-parity.aar "$BASE_AAR"
+
+          rm -rf /tmp/r08-aar-check
+          mkdir -p /tmp/r08-aar-check
+          unzip -q "$BASE_AAR" -d /tmp/r08-aar-check
+          sha256sum /tmp/r08-aar-check/classes.jar /tmp/r08-aar-check/jni/arm64-v8a/libplayer.so > /tmp/r08-wrapper-after.sha256
+          diff -u /tmp/r08-wrapper-before.sha256 /tmp/r08-wrapper-after.sha256
+
+      - name: Run Shader Lab unit tests
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
           set -euo pipefail
-          cp native/Chrovelo-R08-custom-libmpv-arm64.aar app/libs/mpv-android-lib-v0.0.1.aar
           chmod +x ./gradlew
           python3 tools/verify_mpvlab_manifest.py
-          ./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --stacktrace 2>&1 | tee /tmp/r08-gradle.log
+          ./gradlew :app:testStandardDebugUnitTest --stacktrace 2>&1 | tee /tmp/r08-renderer-parity-gradle-test.log
+
+      - name: Prepare persistent signing identity
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE }}
+          SIGNING_KEY_ALIAS_VALUE: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_STORE_PASSWORD_VALUE: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_PASSWORD_VALUE: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in "$SIGNING_KEYSTORE_B64" "$SIGNING_KEY_ALIAS_VALUE" "$SIGNING_STORE_PASSWORD_VALUE" "$SIGNING_KEY_PASSWORD_VALUE"; do
+            [[ -n "$value" ]] || { echo '::error::Persistent signing secret missing'; exit 1; }
+          done
+          keystore="$RUNNER_TEMP/chrovelo-persistent.keystore"
+          printf '%s' "$SIGNING_KEYSTORE_B64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          echo "CHROVELO_SIGNING_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+          echo "CHROVELO_SIGNING_KEY_ALIAS=$SIGNING_KEY_ALIAS_VALUE" >> "$GITHUB_ENV"
+          echo "CHROVELO_SIGNING_STORE_PASSWORD=$SIGNING_STORE_PASSWORD_VALUE" >> "$GITHUB_ENV"
+          echo "CHROVELO_SIGNING_KEY_PASSWORD=$SIGNING_KEY_PASSWORD_VALUE" >> "$GITHUB_ENV"
+
+      - name: Build renderer-parity Pixel APK
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleStandardDebug \
+            -PchroveloVersionCode=${{ steps.meta.outputs.base_version_code }} \
+            --stacktrace 2>&1 | tee /tmp/r08-renderer-parity-gradle-build.log
+          mkdir -p output/proof
+          apk="$(find app/build/outputs/apk/standard/debug -maxdepth 1 -type f -name 'app-standard-arm64-v8a-debug.apk' -print -quit)"
+          [[ -n "$apk" ]] || { echo '::error::arm64 Debug APK not found'; exit 1; }
+          cp "$apk" "output/proof/Chrovelo-R08-renderer-parity-${{ steps.meta.outputs.short_sha }}-arm64-v8a.apk"
+
+      - name: Verify final APK renderer fingerprint and signing
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="output/proof/Chrovelo-R08-renderer-parity-${{ steps.meta.outputs.short_sha }}-arm64-v8a.apk"
+          rm -rf /tmp/r08-parity-apk
+          mkdir -p /tmp/r08-parity-apk
+          unzip -q "$apk" 'lib/arm64-v8a/*.so' -d /tmp/r08-parity-apk
+          lib=/tmp/r08-parity-apk/lib/arm64-v8a/libmpv.so
+          test -f "$lib"
+          test -f /tmp/r08-parity-apk/lib/arm64-v8a/libxml2.so
+          strings "$lib" | grep -F 'N-122998-g5ba2525c7a'
+          strings "$lib" | grep -F 'v7.360.0 (v7.360.0-3-gc93aa134)'
+          strings "$lib" | grep -F -- '-Dvulkan=enabled'
+          strings "$lib" | grep -F 'pl_vulkan_create'
+          readelf -dW "$lib" | grep -F 'Shared library: [libvulkan.so]'
+          readelf -dW "$lib" | grep -F 'Shared library: [libxml2.so]'
+
+          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk" | tee output/proof/apksigner.txt
+          grep -Fi 'b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2' output/proof/apksigner.txt
+          sha256sum "$apk" | tee output/proof/SHA256SUMS.txt
+          cp /tmp/r08-renderer-parity-fingerprint.txt output/proof/renderer-fingerprint.txt
+          cp /tmp/r08-parity-aar-needed.txt output/proof/aar-needed.txt
+          cp /tmp/r08-renderer-parity-dynamic.txt output/proof/libmpv-dynamic.txt
+          cp /tmp/r08-renderer-parity-program-headers.txt output/proof/libmpv-program-headers.txt
+
+      - name: Upload renderer-parity Pixel proof
+        if: steps.trigger.outputs.enabled == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrovelo-R08-renderer-parity-arm64-${{ steps.meta.outputs.short_sha }}
+          path: output/proof/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
       - name: Collect failure diagnostics
         if: failure() && steps.trigger.outputs.enabled == 'yes'
@@ -266,12 +298,12 @@ jobs:
         run: |
           set +e
           mkdir -p r08-failure
-          cp /tmp/r08-native-build.log r08-failure/native-build.log 2>/dev/null || true
-          cp /tmp/r08-gradle.log r08-failure/gradle.log 2>/dev/null || true
-          cp /tmp/r08-ffmpeg-commit.txt r08-failure/ffmpeg-commit.txt 2>/dev/null || true
-          cp /tmp/r08-mpv-commits.txt r08-failure/mpv-commits.txt 2>/dev/null || true
-          cp /tmp/r08-libmpv-program-headers.txt r08-failure/libmpv-program-headers.txt 2>/dev/null || true
-          cp /tmp/r08-aar-elf-alignment.txt r08-failure/aar-elf-alignment.txt 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-native-build.log r08-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-gradle-test.log r08-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-gradle-build.log r08-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-fingerprint.txt r08-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-dynamic.txt r08-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-program-headers.txt r08-failure/ 2>/dev/null || true
           find native/mpv-android -type f -name 'meson-log.txt' -print | while read -r log; do
             dest="r08-failure/${log#native/mpv-android/}"
             mkdir -p "$(dirname "$dest")"
@@ -282,61 +314,22 @@ jobs:
         if: failure() && steps.trigger.outputs.enabled == 'yes'
         uses: actions/upload-artifact@v4
         with:
-          name: Chrovelo-R08-failure-${{ github.sha }}
+          name: Chrovelo-R08-renderer-parity-failure-${{ steps.meta.outputs.short_sha }}
           path: r08-failure/
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Package proof artifacts
-        if: steps.trigger.outputs.enabled == 'yes'
+      - name: Commit validated renderer-parity AAR
+        if: success() && steps.trigger.outputs.enabled == 'yes' && github.event_name == 'push' && github.ref_name == 'agent/upstream-refactor'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p r08-proof
-          cp native/Chrovelo-R08-custom-libmpv-arm64.aar r08-proof/Chrovelo-R08-custom-libmpv-arm64.aar
-          cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so r08-proof/libmpv-arm64.so
-          cp /tmp/r08-libmpv-program-headers.txt r08-proof/libmpv-program-headers.txt
-          cp /tmp/r08-aar-elf-alignment.txt r08-proof/aar-elf-alignment.txt
-          cp /tmp/r08-ffmpeg-commit.txt r08-proof/ffmpeg-commit.txt
-          cp /tmp/r08-mpv-commits.txt r08-proof/mpv-commits.txt
-          APK=$(find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' | head -n 1)
-          if [[ -z "$APK" ]]; then
-            APK=$(find app/build/outputs/apk -type f -name '*.apk' | head -n 1)
-          fi
-          test -n "$APK"
-          cp "$APK" r08-proof/Chrovelo-R08-resident-Pixel9ProXL-debug.apk
-          sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
-
-      - name: Upload R08 native proof
-        if: steps.trigger.outputs.enabled == 'yes'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Chrovelo-R08-custom-libmpv-proof-${{ github.sha }}
-          path: r08-proof/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Commit validated R08 source and patched AAR
-        if: >-
-          success() &&
-          steps.trigger.outputs.enabled == 'yes' &&
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/agent/upstream-refactor' &&
-          github.actor != 'github-actions[bot]'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- \
-            app/libs/mpv-android-lib-v0.0.1.aar \
-            app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua \
-            app/src/main/assets/mpvlab/source/engine-manifest.json \
-            app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt \
-            app/src/test/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridgeTest.kt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- app/libs/mpv-android-lib-v0.0.1.aar
           if git diff --cached --quiet; then
-            echo 'R08 payload already integrated; nothing to commit.'
+            echo 'Renderer-parity AAR already committed.'
             exit 0
           fi
-          git commit -m 'R08 integrate resident libmpv and Lua state sync'
+          git commit -m 'R08 restore R07 Vulkan renderer parity'
           git push origin HEAD:agent/upstream-refactor
