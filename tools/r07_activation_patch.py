@@ -45,7 +45,7 @@ module = Path("app/src/main/java/app/marlboroadvance/mpvex/di/ShaderLabModule.kt
 must_replace(
     module,
     """    single { MpvShaderLabBridge() }\n""",
-    """    single { MpvShaderLabBridge(get()) }\n""",
+    """    single { MpvShaderLabBridge(get<ShaderLabEngineInstaller>()) }\n""",
     "Koin engine-aware bridge",
 )
 
