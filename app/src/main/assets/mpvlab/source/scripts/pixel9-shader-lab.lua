@@ -1608,7 +1608,7 @@ publish_native_state = function()
     local source_gamma = mp.get_property("video-params/gamma", "") or ""
     local lines = {
         "__ready=1",
-        "__version=6.1.1-r07-state-2",
+        "__version=6.1.1-r07-state-3",
         "__serial=" .. tostring(native_serial),
         "__bank=" .. tostring(active_bank),
         "__bypassed=" .. (bypassed and "1" or "0"),
@@ -1852,21 +1852,6 @@ end)
 
 publish_ui_visibility()
 hide_ui_overlay()
-
--- R07 device transport probe. Keep this intentionally tiny and independent
--- of the full multiline native-state snapshot so the Android bridge can
--- distinguish script identity, user-data write support, and payload issues.
-local lua_probe_value = "R07_STATE_2"
-local lua_probe_set_ok, lua_probe_set_err = mp.set_property("user-data/p9lab/lua-probe", lua_probe_value)
-local lua_probe_readback, lua_probe_read_err = mp.get_property("user-data/p9lab/lua-probe", "")
-write_all(ROOT .. "/logs/shaderlab-r07-lua-probe.txt", table.concat({
-    "script=R07_STATE_2",
-    "set_ok=" .. tostring(lua_probe_set_ok),
-    "set_error=" .. tostring(lua_probe_set_err or ""),
-    "readback=" .. tostring(lua_probe_readback or ""),
-    "read_error=" .. tostring(lua_probe_read_err or ""),
-}, "\n") .. "\n")
-
 publish_native_state()
 
-msg.info("Pixel 9 V3.1 Shader Lab Workstation v6.1 Studio R07 STATE 2 loaded: " .. tostring(#items) .. " menu items; 10 built-ins + 10 user slots; Studio UI + Android TV remote; state-compatible")
+msg.info("Pixel 9 V3.1 Shader Lab Workstation v6.1 Studio R07 STATE 3 loaded: " .. tostring(#items) .. " menu items; 10 built-ins + 10 user slots; Studio UI + Android TV remote; state-compatible")

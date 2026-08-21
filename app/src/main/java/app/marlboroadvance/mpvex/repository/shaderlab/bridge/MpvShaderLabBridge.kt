@@ -217,12 +217,11 @@ class MpvShaderLabBridge internal constructor(
         syncProbe.stage("observer_attached")
 
         transport.observeString(NATIVE_STATE_PROPERTY)
-        transport.observeString(LUA_PROBE_PROPERTY)
+        transport.observeString(USER_DATA_ROOT_PROPERTY)
         transport.observeString(SOURCE_GAMMA_PROPERTY)
         MPV_PROPERTY_CONTROLS.forEach { transport.observeDouble(it.id.legacyKey) }
 
-        val nativeState = transport.getString(NATIVE_STATE_PROPERTY)
-        transport.getString(LUA_PROBE_PROPERTY)?.let { syncProbe.stage("lua_probe_readback", it) }
+        val nativeState = readNativeState()
         nativeState
           ?.takeIf { it.isNotBlank() }
           ?.let(::consumeNativeState)
@@ -251,11 +250,11 @@ class MpvShaderLabBridge internal constructor(
         schedule(HANDSHAKE_TIMEOUT_MS) {
           synchronized(commandLock) {
             if (attached && !_state.value.ready) {
-              val luaProbe = transport.getString(LUA_PROBE_PROPERTY) ?: "<null>"
-              val userDataRoot = transport.getString("user-data") ?: "<null>"
+              val directState = transport.getString(NATIVE_STATE_PROPERTY) ?: "<null>"
+              val userDataRoot = transport.getString(USER_DATA_ROOT_PROPERTY) ?: "<null>"
               syncProbe.stage(
                 "timeout",
-                "No native-state snapshot; lua_probe=$luaProbe; user_data_root=${userDataRoot.take(240)}",
+                "No native-state snapshot after direct/root user-data read; direct=${directState.take(120)}; root=${userDataRoot.take(240)}",
               )
             }
           }
@@ -359,13 +358,20 @@ class MpvShaderLabBridge internal constructor(
 
   private fun requestNativeStateHandshake(stage: String) {
     syncProbe.stage("handshake_$stage")
-    val current = transport.getString(NATIVE_STATE_PROPERTY)
+    val current = readNativeState()
     if (!current.isNullOrBlank()) {
       consumeNativeState(current)
       return
     }
     transport.command("script-message", "p9lab-native-state")
   }
+
+  private fun readNativeState(): String? =
+    transport.getString(NATIVE_STATE_PROPERTY)
+      ?.takeIf { it.isNotBlank() }
+      ?: transport.getString(USER_DATA_ROOT_PROPERTY)
+        ?.let(ShaderLabUserDataCodec::extractNativeState)
+        ?.takeIf { it.isNotBlank() }
 
   private fun scriptMessage(name: String, vararg args: String) {
     serializedCommand {
@@ -390,8 +396,8 @@ class MpvShaderLabBridge internal constructor(
       property == NATIVE_STATE_PROPERTY && value is ShaderLabMpvValue.Text -> {
         consumeNativeState(value.value)
       }
-      property == LUA_PROBE_PROPERTY && value is ShaderLabMpvValue.Text -> {
-        syncProbe.stage("lua_probe_observed", value.value)
+      property == USER_DATA_ROOT_PROPERTY && value is ShaderLabMpvValue.Text -> {
+        ShaderLabUserDataCodec.extractNativeState(value.value)?.let(::consumeNativeState)
       }
       property == SOURCE_GAMMA_PROPERTY && value is ShaderLabMpvValue.Text -> {
         consumeSourceGamma(value.value)
@@ -447,7 +453,7 @@ class MpvShaderLabBridge internal constructor(
 
   companion object {
     const val NATIVE_STATE_PROPERTY = "user-data/p9lab/native-state"
-    const val LUA_PROBE_PROPERTY = "user-data/p9lab/lua-probe"
+    const val USER_DATA_ROOT_PROPERTY = "user-data"
     const val SOURCE_GAMMA_PROPERTY = "video-params/gamma"
     const val CONTROLLER_PATH = "/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua"
 
@@ -468,6 +474,65 @@ class MpvShaderLabBridge internal constructor(
         "hlg" -> ShaderLabSourceKind.HDR_HLG
         else -> ShaderLabSourceKind.SDR
       }
+  }
+}
+
+internal object ShaderLabUserDataCodec {
+  private const val NATIVE_STATE_KEY = "native-state"
+
+  fun extractNativeState(raw: String): String? {
+    val keyIndex = raw.indexOf(NATIVE_STATE_KEY)
+    if (keyIndex < 0) return null
+    val colonIndex = raw.indexOf(':', keyIndex + NATIVE_STATE_KEY.length)
+    if (colonIndex < 0) return null
+
+    var index = colonIndex + 1
+    while (index < raw.length && raw[index].isWhitespace()) index += 1
+    if (index >= raw.length || raw[index] != '"') return null
+    index += 1
+
+    val encoded = StringBuilder()
+    var escaped = false
+    while (index < raw.length) {
+      val char = raw[index++]
+      if (!escaped && char == '"') return decodeJsonString(encoded.toString())
+      encoded.append(char)
+      if (escaped) {
+        escaped = false
+      } else if (char == '\\') {
+        escaped = true
+      }
+    }
+    return null
+  }
+
+  private fun decodeJsonString(encoded: String): String? {
+    val decoded = StringBuilder(encoded.length)
+    var index = 0
+    while (index < encoded.length) {
+      val char = encoded[index++]
+      if (char != '\\') {
+        decoded.append(char)
+        continue
+      }
+      if (index >= encoded.length) return null
+      when (val escaped = encoded[index++]) {
+        '"', '\\', '/' -> decoded.append(escaped)
+        'b' -> decoded.append('\b')
+        'f' -> decoded.append('\u000C')
+        'n' -> decoded.append('\n')
+        'r' -> decoded.append('\r')
+        't' -> decoded.append('\t')
+        'u' -> {
+          if (index + 4 > encoded.length) return null
+          val codePoint = encoded.substring(index, index + 4).toIntOrNull(16) ?: return null
+          decoded.append(codePoint.toChar())
+          index += 4
+        }
+        else -> return null
+      }
+    }
+    return decoded.toString()
   }
 }
 

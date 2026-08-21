@@ -49,6 +49,7 @@ class MpvShaderLabBridgeTest {
 
     assertTrue(bridge.state.value.connected)
     assertTrue(MpvShaderLabBridge.NATIVE_STATE_PROPERTY in transport.stringProperties)
+    assertTrue(MpvShaderLabBridge.USER_DATA_ROOT_PROPERTY in transport.stringProperties)
     assertTrue(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY in transport.stringProperties)
     assertEquals(
       setOf("sdr-intensity", "brightness", "contrast", "gamma", "saturation", "hue"),
@@ -85,6 +86,44 @@ class MpvShaderLabBridgeTest {
     assertTrue(
       transport.commands.none { it == listOf("script-message", "p9lab-native-state") },
     )
+  }
+
+  @Test
+  fun attachRecoversNativeSnapshotFromUserDataRootWhenLeafStringReadIsUnavailable() {
+    val transport = FakeTransport().apply {
+      strings[MpvShaderLabBridge.USER_DATA_ROOT_PROPERTY] =
+        """{"p9lab":{"ui-visible":"no","native-state":"__ready=1\n__version=6.1.1-r07-state-3\n__serial=11\n__bank=B"}}"""
+    }
+    val bridge = MpvShaderLabBridge(transport)
+
+    bridge.attach()
+
+    assertTrue(bridge.state.value.ready)
+    assertEquals("6.1.1-r07-state-3", bridge.state.value.backendVersion)
+    assertEquals(11L, bridge.state.value.snapshotSerial)
+    assertEquals(ShaderLabBank.B, bridge.state.value.activeBank)
+    assertFalse(
+      transport.commands.contains(
+        listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH),
+      ),
+    )
+    assertTrue(transport.commands.none { it == listOf("script-message", "p9lab-native-state") })
+  }
+
+  @Test
+  fun observedUserDataRootSnapshotUpdatesStateWhenNestedLeafObservationIsUnavailable() {
+    val transport = FakeTransport()
+    val bridge = MpvShaderLabBridge(transport)
+    bridge.attach()
+
+    transport.emitText(
+      MpvShaderLabBridge.USER_DATA_ROOT_PROPERTY,
+      """{"p9lab":{"native-state":"__ready=1\n__version=6.1.1-r07-state-3\n__serial=12\nbrightness=7.5"}}""",
+    )
+
+    assertTrue(bridge.state.value.ready)
+    assertEquals(12L, bridge.state.value.snapshotSerial)
+    assertEquals(7.5, bridge.state.value.values.getValue(ShaderLabControlId.MPV_BRIGHTNESS), 0.0)
   }
 
   @Test
