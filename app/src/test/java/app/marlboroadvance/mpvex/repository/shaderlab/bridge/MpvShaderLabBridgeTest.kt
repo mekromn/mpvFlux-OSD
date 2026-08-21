@@ -12,6 +12,35 @@ import org.junit.Test
 
 class MpvShaderLabBridgeTest {
   @Test
+  fun preInitPreparationReturnsCanonicalScriptAndDoesNotReprepareOnAttach() {
+    var prepareCount = 0
+    val bridge =
+      MpvShaderLabBridge(
+        transport = FakeTransport(),
+        prepareEngine = { prepareCount += 1 },
+      )
+
+    assertEquals(MpvShaderLabBridge.CONTROLLER_PATH, bridge.prepareForMpvInitialization())
+    assertEquals(1, prepareCount)
+
+    bridge.attach()
+
+    assertEquals(1, prepareCount)
+  }
+
+  @Test
+  fun preInitPreparationFailureReturnsNullAndSurfacesObservableError() {
+    val bridge =
+      MpvShaderLabBridge(
+        transport = FakeTransport(),
+        prepareEngine = { error("synthetic preinit failure") },
+      )
+
+    assertEquals(null, bridge.prepareForMpvInitialization())
+    assertEquals("synthetic preinit failure", bridge.state.value.lastError)
+  }
+
+  @Test
   fun attachObservesNativeStateGammaAndAllLiveMpvPropertiesAndRequestsHandshake() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)

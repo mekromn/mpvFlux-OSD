@@ -184,13 +184,29 @@ class MpvShaderLabBridge internal constructor(
   val events: SharedFlow<ShaderLabBridgeEvent> = _events.asSharedFlow()
 
   private var attached = false
+  private var enginePrepared = false
   private var lastEventError: String? = null
+
+  /**
+   * Called from BaseMPVView.initOptions(), after mpv_create and before
+   * mpv_initialize. Loading the controller through the script option here is
+   * deterministic on libmpv and avoids relying on runtime load-script support.
+   */
+  fun prepareForMpvInitialization(): String? =
+    synchronized(commandLock) {
+      runCatching {
+        syncProbe.stage("preinit_engine_prepare")
+        ensureEnginePrepared()
+        syncProbe.stage("preinit_script_option", CONTROLLER_PATH)
+        CONTROLLER_PATH
+      }.onFailure(::recordTransportFailure).getOrNull()
+    }
 
   fun attach() {
     synchronized(commandLock) {
       runCatching {
         syncProbe.stage("engine_prepare")
-        prepareEngine()
+        ensureEnginePrepared()
         syncProbe.stage("engine_ready")
         if (attached) {
           transport.detach()
@@ -235,7 +251,7 @@ class MpvShaderLabBridge internal constructor(
             if (attached && !_state.value.ready) {
               syncProbe.stage(
                 "timeout",
-                "No native-state snapshot after bounded load-script handshake",
+                "No native-state snapshot after pre-init script option and bounded load-script fallback",
               )
             }
           }
@@ -330,6 +346,12 @@ class MpvShaderLabBridge internal constructor(
 
   override fun loadState() =
     scriptMessage("p9lab-native-load-state")
+
+  private fun ensureEnginePrepared() {
+    if (enginePrepared) return
+    prepareEngine()
+    enginePrepared = true
+  }
 
   private fun requestNativeStateHandshake(stage: String) {
     syncProbe.stage("handshake_$stage")

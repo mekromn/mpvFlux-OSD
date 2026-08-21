@@ -95,6 +95,10 @@ class MPVView(
   var aid: Int by TrackDelegate("aid")
 
   override fun initOptions() {
+    shaderLabBridge.prepareForMpvInitialization()?.let { controllerPath ->
+      MPVLib.setOptionString("script", controllerPath)
+    }
+
     val profile = decoderPreferences.profile.get()
     MPVLib.setOptionString("profile", profile)
     setVo(if (decoderPreferences.gpuNext.get()) "gpu-next" else "gpu")
