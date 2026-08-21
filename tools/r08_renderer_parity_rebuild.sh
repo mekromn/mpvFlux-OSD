@@ -1,5 +1,17 @@
 #!/bin/bash -e
-set -euo pipefail
+set -Eeuo pipefail
+
+TRACE_LOG=/tmp/r08-renderer-parity-native-build.log
+rm -f "$TRACE_LOG"
+: > "$TRACE_LOG"
+exec > >(tee -a "$TRACE_LOG") 2>&1
+
+R08_PHASE=bootstrap
+r08_phase() {
+    R08_PHASE="$1"
+    printf '=== R08 phase: %s ===\n' "$R08_PHASE"
+}
+trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; trap - ERR; printf "R08_FAIL phase=%s rc=%d line=%d command=%q\n" "$R08_PHASE" "$rc" "$line" "$cmd"; exit "$rc"' ERR
 
 ROOT_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
 HARNESS_DIR="$ROOT_DIR/native/mpv-android"
@@ -14,6 +26,7 @@ LIBPLACEBO_SHA=c93aa134ab62365ce1177efff99b8e1e66a818e7
 LIBPLACEBO_TAG=v7.360.0
 LIBPLACEBO_DESCRIBE=v7.360.0-3-gc93aa134
 
+r08_phase harness_checkout
 rm -rf "$HARNESS_DIR"
 git clone https://github.com/Secozzi/mpv-android.git "$HARNESS_DIR"
 git -C "$HARNESS_DIR" checkout "$HARNESS_SHA"
@@ -22,16 +35,19 @@ cd "$BUILDSCRIPTS"
 mkdir -p deps
 
 # Pre-create the exact FFmpeg tree so the harness cannot substitute its own default.
+r08_phase ffmpeg_pin
 git clone --filter=blob:none --no-checkout --shallow-since='2026-02-20T00:00:00Z' \
   https://github.com/FFmpeg/FFmpeg.git deps/ffmpeg
 git -C deps/ffmpeg checkout --detach "$FFMPEG_SHA"
 
+r08_phase harness_download
 ./download.sh
 
 # Replace the harness's floating libplacebo clone with the exact R07 renderer revision.
 # Fetch a small ancestor window plus the release tag because libplacebo embeds
 # `git describe --dirty` in its version string. Code SHA and version fingerprint
 # must both reproduce R07 exactly.
+r08_phase libplacebo_pin
 rm -rf deps/libplacebo
 git init deps/libplacebo
 git -C deps/libplacebo remote add origin https://github.com/haasn/libplacebo.git
@@ -44,6 +60,7 @@ test "$(git -C deps/libplacebo rev-parse HEAD)" = "$LIBPLACEBO_SHA"
 test "$(git -C deps/libplacebo describe --dirty)" = "$LIBPLACEBO_DESCRIBE"
 
 # Reproduce the Android force_mpegts delta against the exact shipped FFmpeg source.
+r08_phase ffmpeg_android_delta
 python3 - <<'PY'
 from pathlib import Path
 path = Path('deps/ffmpeg/libavformat/hls.c')
@@ -70,6 +87,7 @@ test "$(git -C deps/ffmpeg rev-parse HEAD)" = "$FFMPEG_SHA"
 git -C deps/ffmpeg diff --check
 
 # Reset mpv to the proven R07 base and layer only the resident PARAM backport.
+r08_phase mpv_param_backport
 cd deps/mpv
 git config gc.auto 0
 git fetch --no-tags --depth=3 origin \
@@ -83,6 +101,7 @@ cd ../..
 
 # Apply the Android Vulkan build topology used by mpv-android's Vulkan support branch,
 # while keeping our exact R07 source revisions.
+r08_phase vulkan_topology_patch
 python3 - <<'PY'
 from pathlib import Path
 
@@ -130,6 +149,7 @@ text = text.replace(old, '-Diconv=disabled -Dlua=enabled -Dvulkan=enabled \\\n',
 mpv.write_text(text)
 PY
 
+r08_phase shaderc_topology
 mkdir -p deps/shaderc
 cat > deps/shaderc/README <<'EOF'
 shaderc sources are supplied by the Android NDK.
@@ -184,6 +204,7 @@ EOF
 chmod +x scripts/shaderc.sh
 
 # Increase only the fixed vo=gpu PARAM table ceiling.
+r08_phase param64_patch
 python3 - <<'PY'
 from pathlib import Path
 header = Path('deps/mpv/video/out/gpu/user_shaders.h')
@@ -194,6 +215,7 @@ header.write_text(text.replace(old, '#define SHADER_MAX_PARAMS 64', 1))
 PY
 
 # Static source/config audit before the expensive build.
+r08_phase static_audit
 grep -F 'local apilvl=24' buildall.sh
 grep -F -- '-Wl,-z,common-page-size=16384' buildall.sh
 grep -F 'APP_PLATFORM := android-24' ../app/src/main/jni/Application.mk
@@ -202,19 +224,19 @@ grep -F -- '-Dvk-proc-addr=enabled' scripts/libplacebo.sh
 grep -F -- '-Dvulkan=enabled' scripts/mpv.sh
 grep -F '#define SHADER_MAX_PARAMS 64' deps/mpv/video/out/gpu/user_shaders.h
 
-set +e
-./buildall.sh --arch arm64 mpv 2>&1 | tee /tmp/r08-renderer-parity-native-build.log
-build_rc=${PIPESTATUS[0]}
-set -e
+r08_phase native_build
+build_rc=0
+./buildall.sh --arch arm64 mpv || build_rc=$?
 if (( build_rc != 0 )); then
     echo '=== R08 renderer parity compact failure ===' >&2
     grep -nEi '(^|[^[:alpha:]])(error|fatal|failed|meson|shaderc|ndk|vulkan)([^[:alpha:]]|$)' \
-      /tmp/r08-renderer-parity-native-build.log 2>/dev/null | tail -n 120 >&2 || true
+      "$TRACE_LOG" 2>/dev/null | tail -n 120 >&2 || true
     echo '=== R08 native log tail ===' >&2
-    tail -n 100 /tmp/r08-renderer-parity-native-build.log >&2 2>/dev/null || true
+    tail -n 100 "$TRACE_LOG" >&2 2>/dev/null || true
     exit "$build_rc"
 fi
 
+r08_phase renderer_fingerprint_gates
 LIB=prefix/arm64/lib/libmpv.so
 test -f "$LIB"
 
@@ -250,3 +272,5 @@ PY
     echo "dt_needed_libvulkan=yes"
     echo "r07_libplacebo_string=v7.360.0 (v7.360.0-3-gc93aa134)"
 } | tee /tmp/r08-renderer-parity-fingerprint.txt
+
+r08_phase complete
