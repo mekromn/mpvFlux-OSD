@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: r08-libmpv-proof
+  group: r08-libmpv-proof-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
