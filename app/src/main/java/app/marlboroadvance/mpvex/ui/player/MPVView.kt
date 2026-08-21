@@ -11,6 +11,7 @@ import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.DecoderPreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
+import app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge
 import app.marlboroadvance.mpvex.ui.player.PlayerActivity.Companion.TAG
 import app.marlboroadvance.mpvex.ui.player.controls.components.panels.toColorHexString
 import `is`.xyz.mpv.BaseMPVView
@@ -30,6 +31,7 @@ class MPVView(
   private val decoderPreferences: DecoderPreferences by inject()
   private val advancedPreferences: AdvancedPreferences by inject()
   private val subtitlesPreferences: SubtitlesPreferences by inject()
+  private val shaderLabBridge: MpvShaderLabBridge by inject()
 
   var isExiting = false
 
@@ -148,6 +150,7 @@ class MPVView(
 
   override fun observeProperties() {
     for ((name, format) in observedProps) MPVLib.observeProperty(name, format)
+    shaderLabBridge.attach()
   }
 
   override fun postInitOptions() {

@@ -153,8 +153,9 @@ internal class LibMpvShaderLabTransport : ShaderLabMpvTransport {
  */
 class MpvShaderLabBridge internal constructor(
   private val transport: ShaderLabMpvTransport,
+  private val syncProbe: ShaderLabBridgeSyncProbe = NoOpShaderLabBridgeSyncProbe,
 ) : ShaderLabCommandBackend {
-  constructor() : this(LibMpvShaderLabTransport())
+  constructor() : this(LibMpvShaderLabTransport(), FileShaderLabBridgeSyncProbe())
 
   private val commandLock = Any()
   private val _state = MutableStateFlow(ShaderLabBackendState())
@@ -311,6 +312,7 @@ class MpvShaderLabBridge internal constructor(
   private fun consumeNativeState(raw: String) {
     val decoded = ShaderLabNativeStateCodec.decode(raw, _state.value)
     _state.value = decoded.copy(connected = true)
+    runCatching { syncProbe.record(decoded) }
     _events.tryEmit(ShaderLabBridgeEvent.SnapshotReceived(decoded.snapshotSerial))
     decoded.lastError?.let(::emitBackendErrorIfChanged)
   }

@@ -246,6 +246,13 @@ local nav_repeat_timer = nil
 local nav_repeat_watchdog = nil
 local user_slot_exists = {}
 
+-- R07 observable native bridge state. The publisher is assigned after all
+-- workstation helpers are defined; functions may safely reference it later.
+local native_last_error = ""
+local native_apply_busy = false
+local native_serial = 0
+local publish_native_state = function() end
+
 local function clamp(v, lo, hi)
     if v < lo then return lo end
     if v > hi then return hi end
@@ -1151,42 +1158,46 @@ local function enter_original_view()
 end
 
 local function toggle_bypass()
-    if not is_sdr() then mp.osd_message("Shader Lab bypass is SDR-only", 2); return end
-    if preview_active then return end
+    if not is_sdr() then mp.osd_message("Shader Lab bypass is SDR-only", 2); return false end
+    if preview_active then return false end
     if not bypassed then
         enter_original_view()
         bypassed = true
         mp.osd_message("BYPASS: original SDR comparison", 1.5)
         show(false)
-        return
+        return true
     end
     bypassed = false
-    if apply_all() then show(true) end
+    if apply_all() then show(true); return true end
+    return false
 end
 
 local function preview_start()
-    if not ui_visible or preview_active or not is_sdr() then return end
+    if preview_active or not is_sdr() then return false end
     preview_was_bypassed = bypassed
     preview_active = true
     if not bypassed then enter_original_view() end
     show(false)
+    return true
 end
 
 local function preview_end()
-    if not preview_active then return end
+    if not preview_active then return true end
     preview_active = false
+    local ok = true
     if preview_was_bypassed then
         bypassed = true
         enter_original_view()
     else
         bypassed = false
-        apply_all()
+        ok = apply_all()
     end
     show(false)
+    return ok ~= false
 end
 
 local function preview_toggle()
-    if preview_active then preview_end() else preview_start() end
+    if preview_active then return preview_end() else return preview_start() end
 end
 
 local function compare()
@@ -1286,7 +1297,12 @@ local function reset_all()
     B.SHADER_PROOF = 0
     active_bank = "B"
     bypassed = false
-    if apply_all() then mp.osd_message("Tuning reset to V3.1 baseline", 2); show(true) end
+    if apply_all() then
+        mp.osd_message("Tuning reset to V3.1 baseline", 2)
+        show(true)
+        return true
+    end
+    return false
 end
 
 local function preset_chroma_1075()
@@ -1584,6 +1600,136 @@ mp.observe_property("osd-height", "native", schedule_layout_refresh)
 sync_granularity_item()
 scan_user_slots()
 
+-- R07 event-driven Android state transport. Every native semantic mutation
+-- publishes a complete snapshot through one observed mpv user-data property.
+-- There is deliberately no periodic state timer here.
+publish_native_state = function()
+    native_serial = native_serial + 1
+    local source_gamma = mp.get_property("video-params/gamma", "") or ""
+    local lines = {
+        "__ready=1",
+        "__version=6.1.1-r07-state-1",
+        "__serial=" .. tostring(native_serial),
+        "__bank=" .. tostring(active_bank),
+        "__bypassed=" .. (bypassed and "1" or "0"),
+        "__preview=" .. (preview_active and "1" or "0"),
+        "__sdr=" .. (is_sdr() and "1" or "0"),
+        "__source_gamma=" .. tostring(source_gamma):gsub("[\r\n]", " "),
+        "__shader_slot=" .. ((last_good_path == SLOT_A) and "A" or "B"),
+        "__swaps=" .. tostring(shader_apply_count),
+        "__apply_busy=" .. (native_apply_busy and "1" or "0"),
+        "__error=" .. tostring(native_last_error or ""):gsub("[\r\n]", " "),
+    }
+    for _, it in ipairs(items) do
+        if it.kind ~= "action" then
+            local value = B[it.key]
+            if value ~= nil then
+                lines[#lines + 1] = it.key .. "=" .. string.format("%.17g", value)
+            end
+        end
+    end
+    for i = 1, 10 do
+        lines[#lines + 1] = "__user" .. tostring(i) .. "=" .. (user_slot_exists[i] and "1" or "0")
+    end
+    mp.set_property("user-data/p9lab/native-state", table.concat(lines, "\n"))
+end
+
+local function native_invoke(label, busy, fn)
+    if busy then
+        native_apply_busy = true
+        publish_native_state()
+    end
+    local ok, result = pcall(fn)
+    native_apply_busy = false
+    if not ok then
+        native_last_error = tostring(result or (label .. " failed"))
+        msg.error("Shader Lab native command failed: " .. native_last_error)
+    elseif result == false then
+        native_last_error = label .. " failed"
+    else
+        native_last_error = ""
+    end
+    publish_native_state()
+    return ok and result ~= false
+end
+
+local function native_set_by_key(key, value)
+    local it = by_key[key]
+    local num = tonumber(value)
+    if not it then
+        native_last_error = "Unknown Shader Lab control: " .. tostring(key)
+        publish_native_state()
+        return false
+    end
+    if not num then
+        native_last_error = "Invalid Shader Lab value for " .. tostring(key) .. ": " .. tostring(value)
+        publish_native_state()
+        return false
+    end
+    if it.kind == "action" then
+        native_last_error = "Cannot set action control: " .. tostring(key)
+        publish_native_state()
+        return false
+    end
+
+    B[key] = round_if_needed(clamp(num, it.min, it.max), it.integer)
+    selected = it.index
+
+    if it.kind == "controller" then
+        native_last_error = ""
+        publish_native_state()
+        return true
+    end
+    if it.kind == "granularity" then
+        step_mode = B[key]
+        sync_granularity_item()
+        native_last_error = ""
+        publish_native_state()
+        return true
+    end
+    if it.kind == "morph" then
+        native_apply_busy = true
+        publish_native_state()
+        local ok = apply_morph()
+        native_apply_busy = false
+        native_last_error = ok and "" or "Preset morph failed"
+        publish_native_state()
+        return ok
+    end
+
+    enforce_order(B, key)
+    if it.kind == "property" then
+        if unsupported_properties[key] then
+            native_last_error = "Property unavailable: " .. tostring(key)
+            publish_native_state()
+            return false
+        end
+        local ok, err = mp.set_property_number(key, B[key])
+        if not ok then
+            unsupported_properties[key] = true
+            native_last_error = "Property unavailable: " .. tostring(key) .. " (" .. tostring(err) .. ")"
+            publish_native_state()
+            return false
+        end
+        native_last_error = ""
+        publish_native_state()
+        return true
+    end
+
+    native_apply_busy = true
+    publish_native_state()
+    local ok, err = apply_shader(B)
+    native_apply_busy = false
+    if ok then
+        native_last_error = ""
+    else
+        native_last_error = tostring(err or "Shader apply failed")
+        msg.error("Shader Lab native apply failed: " .. native_last_error)
+    end
+    publish_native_state()
+    return ok ~= nil and ok ~= false
+end
+
 safe_forced_binding("MBTN_LEFT_DBL","p9lab-mpvflux-left",phone_left)
 safe_forced_binding("MBTN_MID_DBL","p9lab-mpvflux-center",phone_center)
 safe_forced_binding("MBTN_RIGHT_DBL","p9lab-mpvflux-right",phone_right)
@@ -1637,7 +1783,7 @@ mp.register_script_message("p9lab-layout-info", function()
 end)
 mp.register_script_message("p9lab-list",show_list)
 mp.register_script_message("p9lab-status",status)
-mp.register_script_message("p9lab-set",set_by_key)
+mp.register_script_message("p9lab-set",native_set_by_key)
 
 mp.register_script_message("p9lab-user-save",function(slot) B.USER_SLOT=clamp(tonumber(slot) or B.USER_SLOT,1,10); save_user_preset(B.USER_SLOT) end)
 mp.register_script_message("p9lab-user-load",function(slot) B.USER_SLOT=clamp(tonumber(slot) or B.USER_SLOT,1,10); load_user_preset(B.USER_SLOT) end)
@@ -1650,15 +1796,62 @@ mp.register_script_message("p9lab-morph",function(a,b,t)
 end)
 mp.register_script_message("p9lab-revert-video-start",function() request_confirmation(by_key.REVERT_VIDEO_START,revert_video_start) end)
 
+-- R07 semantic command bridge registrations. These bypass the legacy Lua OSD
+-- confirmation layer because confirmation policy now lives above R06.
+mp.register_script_message("p9lab-native-state", publish_native_state)
+mp.register_script_message("p9lab-native-set", native_set_by_key)
+mp.register_script_message("p9lab-native-bypass", function() native_invoke("Bypass", true, toggle_bypass) end)
+mp.register_script_message("p9lab-native-preview-start", function() native_invoke("Original preview start", true, preview_start) end)
+mp.register_script_message("p9lab-native-preview-end", function() native_invoke("Original preview end", true, preview_end) end)
+mp.register_script_message("p9lab-native-preview-toggle", function() native_invoke("Original preview toggle", true, preview_toggle) end)
+mp.register_script_message("p9lab-native-reset-all", function() native_invoke("Reset all", true, reset_all) end)
+mp.register_script_message("p9lab-native-revert-video-start", function() native_invoke("Revert video start", true, revert_video_start) end)
+mp.register_script_message("p9lab-native-user-save", function(slot)
+    native_invoke("Save user preset", false, function()
+        B.USER_SLOT = clamp(tonumber(slot) or B.USER_SLOT, 1, 10)
+        return save_user_preset(B.USER_SLOT)
+    end)
+end)
+mp.register_script_message("p9lab-native-user-load", function(slot)
+    native_invoke("Load user preset", true, function()
+        B.USER_SLOT = clamp(tonumber(slot) or B.USER_SLOT, 1, 10)
+        return load_user_preset(B.USER_SLOT)
+    end)
+end)
+mp.register_script_message("p9lab-native-user-clear", function(slot)
+    native_invoke("Clear user preset", false, function()
+        B.USER_SLOT = clamp(tonumber(slot) or B.USER_SLOT, 1, 10)
+        return clear_user_preset(B.USER_SLOT)
+    end)
+end)
+mp.register_script_message("p9lab-native-builtin-load", function(slot)
+    native_invoke("Load built-in preset", true, function()
+        B.BUILTIN_SLOT = clamp(tonumber(slot) or B.BUILTIN_SLOT, 1, 10)
+        return load_builtin_preset(B.BUILTIN_SLOT)
+    end)
+end)
+mp.register_script_message("p9lab-native-morph", function(a,b,t)
+    native_invoke("Preset morph", true, function()
+        B.MORPH_FROM = clamp(tonumber(a) or B.MORPH_FROM, 1, 20)
+        B.MORPH_TO = clamp(tonumber(b) or B.MORPH_TO, 1, 20)
+        B.MORPH_AMOUNT = clamp(tonumber(t) or B.MORPH_AMOUNT, 0, 1)
+        return apply_morph()
+    end)
+end)
+mp.register_script_message("p9lab-native-save-state", function() native_invoke("Save state", false, save_state) end)
+mp.register_script_message("p9lab-native-load-state", function() native_invoke("Load state", true, load_state) end)
+
 mp.register_event("file-loaded",function()
     edit_mode=false; edit_original_value=nil; edit_changed=false
     preview_active=false; nav_hold_end(); cancel_confirmation()
     if is_sdr() then last_good_path=SLOT_A; bypassed=false end
     capture_video_start()
     if ui_visible then show(false) end
+    publish_native_state()
 end)
 
 publish_ui_visibility()
 hide_ui_overlay()
+publish_native_state()
 
 msg.info("Pixel 9 V3.1 Shader Lab Workstation v6.1 Studio loaded: " .. tostring(#items) .. " menu items; 10 built-ins + 10 user slots; Studio UI + Android TV remote; state-compatible")
