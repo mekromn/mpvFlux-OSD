@@ -110,8 +110,32 @@ jobs:
         run: |
           set -euo pipefail
           cd native/mpv-android/buildscripts
-          ./buildall.sh --arch arm64 mpv
-          ./buildall.sh --arch arm64 mpv-android
+          ./buildall.sh --arch arm64 mpv 2>&1 | tee /tmp/r08-native-build.log
+          ./buildall.sh --arch arm64 mpv-android 2>&1 | tee -a /tmp/r08-native-build.log
+
+      - name: Collect native failure diagnostics
+        if: failure() && steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set +e
+          mkdir -p r08-native-failure
+          cp /tmp/r08-native-build.log r08-native-failure/native-build.log 2>/dev/null || true
+          find native/mpv-android -type f \( -name 'meson-log.txt' -o -name 'meson-logs.txt' \) -print | while read -r log; do
+            dest="r08-native-failure/${log#native/mpv-android/}"
+            mkdir -p "$(dirname "$dest")"
+            cp "$log" "$dest"
+          done
+          git -C native/mpv-android/buildscripts/deps/mpv status --short > r08-native-failure/mpv-status.txt 2>&1 || true
+          git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' > r08-native-failure/mpv-commits.txt 2>&1 || true
+
+      - name: Upload native failure diagnostics
+        if: failure() && steps.trigger.outputs.enabled == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrovelo-R08-native-build-failure-${{ github.sha }}
+          path: r08-native-failure/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Verify native feature and 16 KB ELF alignment
         if: steps.trigger.outputs.enabled == 'yes'
