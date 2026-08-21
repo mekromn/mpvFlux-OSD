@@ -86,8 +86,12 @@ jobs:
 
           cd deps/ffmpeg
           git config gc.auto 0
+          git reset --hard HEAD
           git fetch --no-tags --depth=1 origin 5ba2525c7affc29cbd99e6266946b382d3fffe8b
           git checkout --detach 5ba2525c7affc29cbd99e6266946b382d3fffe8b
+          git apply ../../patches/ffmpeg_force_mpegts.patch
+          test "$(git rev-parse HEAD)" = '5ba2525c7affc29cbd99e6266946b382d3fffe8b'
+          git diff --check
           git log -1 --format='%H %s' | tee /tmp/r08-ffmpeg-commit.txt
 
           cd ../mpv
@@ -175,8 +179,6 @@ jobs:
           jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
           jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
 
-          # Hard compatibility invariant: the shipped AAR and replacement build
-          # must share both the proven d54 mpv baseline and exact FFmpeg source.
           strings native/base-aar/jni/arm64-v8a/libmpv.so | grep -F 'mpv v0.41.0-224-gd54bad563'
           strings native/base-aar/jni/arm64-v8a/libavdevice.so | grep -F 'FFmpeg version N-122998-g5ba2525c7a'
           sha256sum native/base-aar/classes.jar native/base-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-wrapper-before.sha256
