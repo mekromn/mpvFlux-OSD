@@ -1,5 +1,7 @@
 package app.marlboroadvance.mpvex.ui.player.controls
 
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
@@ -51,7 +53,8 @@ fun RenderConfigurablePlayerButton(
           onOpenSheet(Sheets.More)
         },
         color = controlColor,
-        modifier = modifier,
+        modifier = modifier.size(buttonSize),
+        shape = CircleShape,
       )
 
     PlayerButton.SHADER_LAB ->
@@ -62,7 +65,8 @@ fun RenderConfigurablePlayerButton(
           bridge.toggleLegacyOverlay()
         },
         color = controlColor,
-        modifier = modifier,
+        modifier = modifier.size(buttonSize),
+        shape = CircleShape,
       )
 
     else ->
