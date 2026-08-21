@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: r08-libmpv-proof
@@ -37,20 +37,88 @@ jobs:
             echo 'enabled=no' >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Finalize R08 resident source compatibility
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+
+          def replace_once(path: Path, old: str, new: str):
+              text = path.read_text()
+              if new in text:
+                  return False
+              count = text.count(old)
+              assert count == 1, f"{path}: expected one anchor, found {count}"
+              path.write_text(text.replace(old, new, 1))
+              return True
+
+          lua = Path('app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua')
+          lua_anchor = '''local function native_set_by_key(key, value)\n'''
+          lua_insert = '''-- R08 resident transport compatibility cache. Android owns ordinary\n-- resident GPU tuning, but legacy Lua preset/state files still serialize B.\n-- This updates that in-memory bank without applying properties, generating\n-- GLSL, writing runtime shader files, or changing the shader list.\nlocal function resident_cache_sync(snapshot)\n    if type(snapshot) ~= "string" then return false end\n    local touched = false\n    for token in snapshot:gmatch("[^;]+") do\n        local key, value = token:match("^([^=]+)=([%+%-%.%deE]+)$")\n        local it = key and by_key[key] or nil\n        local num = tonumber(value)\n        if it and it.kind ~= "action" and num then\n            B[key] = round_if_needed(clamp(num, it.min, it.max), it.integer)\n            if it.kind == "granularity" then step_mode = B[key] end\n            touched = true\n        end\n    end\n    enforce_order(B, "")\n    sync_granularity_item()\n    return touched\nend\n\nlocal function native_set_by_key(key, value)\n'''
+          replace_once(lua, lua_anchor, lua_insert)
+
+          reg_anchor = '''mp.register_script_message("p9lab-native-state", publish_native_state)\nmp.register_script_message("p9lab-native-set", native_set_by_key)\n'''
+          reg_insert = '''mp.register_script_message("p9lab-native-state", publish_native_state)\nmp.register_script_message("p9lab-native-set", native_set_by_key)\nmp.register_script_message("p9lab-native-user-save-r08", function(slot, snapshot)\n    native_invoke("Save user preset", false, function()\n        resident_cache_sync(snapshot)\n        B.USER_SLOT = clamp(tonumber(slot) or B.USER_SLOT, 1, 10)\n        return save_user_preset(B.USER_SLOT)\n    end)\nend)\nmp.register_script_message("p9lab-native-save-state-r08", function(snapshot)\n    native_invoke("Save state", false, function()\n        resident_cache_sync(snapshot)\n        return save_state()\n    end)\nend)\n'''
+          replace_once(lua, reg_anchor, reg_insert)
+
+          bridge = Path('app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt')
+          replace_once(
+              bridge,
+              '''  override fun saveUserPreset(preset: ShaderLabPresetId.User) =\n    scriptMessage("p9lab-native-user-save", preset.slot.toString())\n''',
+              '''  override fun saveUserPreset(preset: ShaderLabPresetId.User) =\n    scriptMessage(\n      "p9lab-native-user-save-r08",\n      preset.slot.toString(),\n      luaStateSnapshot(),\n    )\n''',
+          )
+          replace_once(
+              bridge,
+              '''  override fun saveState() =\n    scriptMessage("p9lab-native-save-state")\n''',
+              '''  override fun saveState() =\n    scriptMessage("p9lab-native-save-state-r08", luaStateSnapshot())\n''',
+          )
+          bridge_helper_anchor = '''    private fun formatDouble(value: Double): String = String.format(Locale.US, "%.17g", value)\n\n    private fun sourceKind(gamma: String): ShaderLabSourceKind =\n'''
+          bridge_helper_insert = '''    private fun formatDouble(value: Double): String = String.format(Locale.US, "%.17g", value)\n\n    private fun luaStateSnapshot(): String {\n      val normalized = ShaderLabControlCatalog.normalizeValues(_state.value.values)\n      return ShaderLabControlCatalog.controls.joinToString(";") { spec ->\n        "${spec.id.legacyKey}=${formatDouble(normalized.getValue(spec.id))}"\n      }\n    }\n\n    private fun sourceKind(gamma: String): ShaderLabSourceKind =\n'''
+          replace_once(bridge, bridge_helper_anchor, bridge_helper_insert)
+
+          test = Path('app/src/test/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridgeTest.kt')
+          test_anchor = '''  @Test\n  fun externalMpvPropertyObservationUpdatesStateImmediately() {\n'''
+          test_insert = '''  @Test\n  fun saveCompatibilityActionsCarryCurrentResidentAndMpvStateWithoutLegacyApply() {\n    val transport = FakeTransport()\n    val bridge = MpvShaderLabBridge(transport)\n    bridge.attach()\n    bridge.setValues(\n      linkedMapOf(\n        ShaderLabControlId.LUMA_CONTRAST to 0.31,\n        ShaderLabControlId.MPV_BRIGHTNESS to 4.25,\n      ),\n    )\n    transport.commands.clear()\n\n    bridge.saveUserPreset(ShaderLabPresetId.User(3))\n    bridge.saveState()\n\n    val preset = transport.commands.single { it.getOrNull(1) == "p9lab-native-user-save-r08" }\n    assertEquals("3", preset[2])\n    assertTrue(preset[3].contains("LUMA_CONTRAST=0.31000000000000000"))\n    assertTrue(preset[3].contains("brightness=4.2500000000000000"))\n    val state = transport.commands.single { it.getOrNull(1) == "p9lab-native-save-state-r08" }\n    assertTrue(state[2].contains("LUMA_CONTRAST=0.31000000000000000"))\n    assertTrue(state[2].contains("brightness=4.2500000000000000"))\n    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-set" })\n    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })\n  }\n\n  @Test\n  fun externalMpvPropertyObservationUpdatesStateImmediately() {\n'''
+          replace_once(test, test_anchor, test_insert)
+
+          manifest_path = Path('app/src/main/assets/mpvlab/source/engine-manifest.json')
+          manifest = json.loads(manifest_path.read_text())
+          manifest['engineVersion'] = '6.1.1-source-r08-resident-2'
+          lua_bytes = lua.read_bytes()
+          for entry in manifest['files']:
+              if entry['path'] == 'scripts/pixel9-shader-lab.lua':
+                  entry['bytes'] = len(lua_bytes)
+                  entry['sha256'] = hashlib.sha256(lua_bytes).hexdigest()
+                  break
+          else:
+              raise AssertionError('Lua payload missing from engine manifest')
+          manifest['sourceProvenance']['r08ResidentTransport'] = (
+              'R08 resident-2: vo=gpu PARAM shader with complete glsl-shader-opts transport; '
+              'Lua preset/state saves receive state-only cache synchronization without ordinary GLSL regeneration.'
+          )
+          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+
+          grep -F 'p9lab-native-user-save-r08' app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
+          grep -F 'p9lab-native-save-state-r08' app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
+          grep -F 'luaStateSnapshot()' app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt
+          python3 tools/verify_mpvlab_manifest.py
+
       - name: Install native build dependencies
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm
-          # Ubuntu's runner image currently ships Meson 1.3.x, while the
-          # dependency set fetched by this pinned harness now includes
-          # fontconfig requiring Meson >= 1.6.1. Pin a modern user-local Meson
-          # and expose it to all following Actions steps.
+          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm lua5.2
           python3 -m pip install --user --upgrade 'meson>=1.6.1'
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/meson" --version
+          lua5.2 -e 'assert(loadfile("app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua"))'
 
       - name: Fetch pinned mpv-android build harness
         if: steps.trigger.outputs.enabled == 'yes'
@@ -69,20 +137,14 @@ jobs:
           cd native/mpv-android/buildscripts
           ./download.sh
           cd deps/mpv
-          # download.sh creates a depth-1 mpv checkout. Fetch the proven
-          # renderer baseline plus the two narrow upstream commits required
-          # for vo=gpu tunable PARAM support in one shallow-boundary update.
           git config gc.auto 0
           git fetch --no-tags --depth=3 origin \
             d54bad5636924ab3f39cb6e397b94b6aa8a7c433 \
             91ceffce42534a45705617036b6b2a392a32fc57 \
             0d655fe66590009e1d77a17581257d677286531a
           git checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
-          # cherry-pick creates new commits, so hosted runners need a local
-          # committer identity even though the upstream patch authors remain.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # 0d655fe consumes bstr-named uniform helpers introduced by 91ceffce.
           git cherry-pick 91ceffce42534a45705617036b6b2a392a32fc57
           git cherry-pick 0d655fe66590009e1d77a17581257d677286531a
 
@@ -181,6 +243,14 @@ jobs:
           set -euo pipefail
           cp native/mpv-android/lib/build/outputs/aar/lib-release.aar app/libs/mpv-android-lib-v0.0.1.aar
           chmod +x ./gradlew
+          python3 tools/verify_mpvlab_manifest.py
+          python3 - <<'PY'
+          from pathlib import Path
+          shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
+          assert '@@' not in shader, 'resident shader contains unresolved template token'
+          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
+          print('Resident shader PARAM audit PASS: 39')
+          PY
           ./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --stacktrace
 
       - name: Package proof artifacts
@@ -204,3 +274,28 @@ jobs:
           path: r08-proof/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Commit validated R08 source and custom AAR
+        if: >-
+          success() &&
+          steps.trigger.outputs.enabled == 'yes' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/agent/upstream-refactor' &&
+          github.actor != 'github-actions[bot]'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            app/libs/mpv-android-lib-v0.0.1.aar \
+            app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua \
+            app/src/main/assets/mpvlab/source/engine-manifest.json \
+            app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt \
+            app/src/test/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridgeTest.kt
+          if git diff --cached --quiet; then
+            echo 'R08 payload already integrated; nothing to commit.'
+            exit 0
+          fi
+          git commit -m 'R08 integrate resident libmpv and Lua state sync'
+          git push origin HEAD:agent/upstream-refactor
