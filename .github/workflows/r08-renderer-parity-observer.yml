@@ -1,0 +1,51 @@
+name: R08 Renderer Parity Observer
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report matching renderer-parity push run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Looking for R08 renderer-parity push run for head SHA: $HEAD_SHA"
+          for attempt in $(seq 1 12); do
+            json="$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/r08-renderer-parity-rebuild.yml/runs" \
+              -f branch=agent/upstream-refactor \
+              -f event=push \
+              -f per_page=20)"
+            result="$(printf '%s' "$json" | python3 -c '
+import json, os, sys
+obj=json.load(sys.stdin)
+sha=os.environ["HEAD_SHA"]
+for run in obj.get("workflow_runs", []):
+    if run.get("head_sha") == sha:
+        print(f"run_id={run.get(chr(105)+chr(100))}")
+        print(f"status={run.get(chr(115)+chr(116)+chr(97)+chr(116)+chr(117)+chr(115))}")
+        print(f"conclusion={run.get(chr(99)+chr(111)+chr(110)+chr(99)+chr(108)+chr(117)+chr(115)+chr(105)+chr(111)+chr(110))}")
+        print(f"html_url={run.get(chr(104)+chr(116)+chr(109)+chr(108)+chr(95)+chr(117)+chr(114)+chr(108))}")
+        break
+')"
+            if [[ -n "$result" ]]; then
+              printf '%s\n' "$result"
+              exit 0
+            fi
+            echo "Parity run not indexed yet (attempt $attempt/12)."
+            sleep 5
+          done
+          echo '::error::No matching renderer-parity push run found for this branch head.'
+          exit 1
