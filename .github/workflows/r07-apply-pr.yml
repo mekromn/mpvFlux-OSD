@@ -1,0 +1,61 @@
+name: R07 Guarded State Transport Apply
+
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  apply-r07:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout refactor branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/upstream-refactor
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Apply guarded R07 patch
+        run: python3 tools/r07_apply_patch.py
+
+      - name: Verify readable engine manifest
+        run: python3 tools/verify_mpvlab_manifest.py
+
+      - name: Run Shader Lab unit tests on patched tree
+        run: ./gradlew :app:testStandardDebugUnitTest --stacktrace
+
+      - name: Commit verified R07 wiring and remove temporary helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/r07-apply.yml .github/workflows/r07-apply-pr.yml tools/r07_apply_patch.py
+          git add -- \
+            app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua \
+            app/src/main/assets/mpvlab/source/engine-manifest.json \
+            app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt \
+            app/src/main/java/app/marlboroadvance/mpvex/di/ShaderLabModule.kt \
+            app/src/main/java/app/marlboroadvance/mpvex/ui/player/MPVView.kt
+          git diff --cached --check
+          git status --short
+          git commit -m "R07 wire event-driven native state transport"
+          git push origin HEAD:agent/upstream-refactor
