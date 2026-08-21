@@ -4,17 +4,18 @@ This file is the execution/status companion to `SHADER_LAB_REFACTOR_ROADMAP.md` 
 
 ## Current execution state
 
-- `CURRENT_STEP = R06`
+- `CURRENT_STEP = R07`
 - `R01_STATUS = DONE`
 - `R02_STATUS = DONE`
 - `R03_STATUS = DONE`
 - `R04_STATUS = DONE`
 - `R05_STATUS = DONE`
-- `R06_STATUS = TODO`
-- R05 is complete. Do not redo it unless catalog parity/metadata regresses or the user explicitly requests it.
-- The next `Continue roadmap` executes **R06 only**: Build semantic Shader Lab command API.
+- `R06_STATUS = DONE`
+- `R07_STATUS = TODO`
+- R06 is complete. Do not redo it unless semantic-command behavior, validation, or transport neutrality regresses or the user explicitly requests it.
+- The next `Continue roadmap` executes **R07 only**: Refactor MPV bridge and observable state transport.
 
-## Verified repository baseline at R05 completion
+## Verified repository baseline at R06 completion
 
 - Working repository: `mekromn/mpvFlux-OSD`
 - Refactor branch: `agent/upstream-refactor`
@@ -22,7 +23,7 @@ This file is the execution/status companion to `SHADER_LAB_REFACTOR_ROADMAP.md` 
 - Fork master: `83e2b2f64c48abbdc1125cff626cfcbae230bfde`
 - Immediate upstream: `Muhammedahmed18/mpvFlux`
 - Immediate upstream remains `f2ed015356a20bb7021e850acc599274a5f91450` (`improved`, 2026-05-22).
-- No newer master/upstream source required integration before R05.
+- No newer master/upstream source required integration before R06.
 
 ## Stable Chrovelo application identity
 
@@ -70,89 +71,115 @@ This file is the execution/status companion to `SHADER_LAB_REFACTOR_ROADMAP.md` 
 - Normal CI #27 / `32409643876`: **PASS**.
 - Pixel in-place update + file inspection: **PASS**.
 
-## R05 — Typed authoritative control catalog
+### R05 — Typed authoritative control catalog
+
+**Status:** `DONE`
+
+- Added authoritative typed catalog independent of UI/transport.
+- Ported all 53 value-bearing legacy controls and 10 action-only workstation items.
+- Encoded 12 ordered-pair constraints and 5 virtual-master dependencies.
+- Added typed user/built-in preset IDs and parity inventory.
+- Dedicated run #79 / `32416421098`: **PASS**.
+- Normal CI #32 / `32416421058`: **PASS**.
+
+## R06 — Semantic Shader Lab command API
 
 **Status:** `DONE`
 
 ### Implemented
 
-- Added `app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/catalog/ShaderLabControlCatalog.kt`.
-- Added typed domain IDs/models:
-  - `ShaderLabControlId`
-  - `ShaderLabGroup`
-  - `ShaderLabControlKind`
-  - `ShaderLabControlSpec`
-  - `ShaderLabStepMode`
-  - `ShaderLabPresetId`
-  - `ShaderLabActionId` / `ShaderLabActionSpec`
-  - `ShaderLabControlRelationship`
-  - `ShaderLabBuiltInPreset`
-- Added authoritative `ShaderLabControlCatalog` with generic clamp/step/format/normalization/effective-value helpers.
-- Ported all **53** value-bearing legacy Android controls with their exact legacy keys and canonical metadata.
-- Represented all **10** Lua action-only workstation items as typed action metadata; execution is intentionally deferred to R06.
-- Encoded all **12** proven Lua ordered-pair relationships using `0.000001` minimum gap.
-- Encoded all **5** proven virtual-master scaling relationships.
-- Added bounded typed user/built-in preset IDs and preserved the 10 legacy built-in names.
-- Added `docs/R05_CONTROL_CATALOG_INVENTORY.md` for explicit legacy parity/accounting.
+- Added `app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/command/ShaderLabCommandApi.kt`.
+- Added a single input-neutral `ShaderLabCommand` surface for future touch, TV/D-pad, presets, ViewModel, and tests.
+- Implemented semantic commands for:
+  - value set/adjust;
+  - group/control selection;
+  - bypass;
+  - original-preview start/end plus legacy toggle fallback;
+  - video-start revert and reset-all;
+  - user preset save/load/clear;
+  - built-in preset load;
+  - preset morph;
+  - gamut/luma diagnostic view;
+  - complete state save/load.
+- Added `ShaderLabAdjustDirection` and typed `ShaderLabDiagnosticView` (`OFF`, `GAMUT`, `LUMA`, `BOTH`).
+- Added `ShaderLabCommandBackend` as the runtime boundary. It contains no MPV command names, Lua `script-message` strings, Compose types, pointer events, key events, or Android UI types.
+- Added typed command effects and results: applied, rejected, and backend failure.
+- `SetValue` and `Adjust` reuse the R05 catalog for clamping, exact fine/normal/coarse steps, and ordered-pair normalization.
+- Ordered-pair normalization writes only the addressed control and directly related pair member(s); unrelated controls are not silently rewritten.
+- Selection commands are local semantic effects and do not touch the runtime backend.
+- Preview comparison is explicitly modeled as start/end, enabling true later press lifecycle handling rather than toggle-only behavior.
+- Preset operations use bounded typed preset IDs instead of raw slot integers.
+- Morph accepts typed built-in/user endpoints, rejects `VideoStart`, rejects non-finite amounts, and clamps the interpolation amount to `0.0..1.0`.
+- Destructive-confirmation policy reuses the R05 action metadata instead of creating another canonical destructive-action table.
+- Backend exceptions surface as typed `ShaderLabCommandResult.Failed` results.
 
-### R05 commits
+### R06 commits
 
-- `4513ab2a01ee0ddbd3808b16e6a5eb204468dd31` — typed catalog/domain model.
-- `0d6bdc85609132eda66adcb6afce24579403b923` — catalog tests.
-- `cf1a0a20d8525b133a4a4b01d790afdd56df1dc7` — legacy catalog parity inventory.
-- `a3bbda0f54e40f5b6cd40390d35958ae10514f94` — roadmap completion update.
+- `9528eb33b4afadf3b59ff514439a7e78aad2e0ec` — semantic command API and transport-neutral backend boundary.
+- `d693d238fa6e8c6d5e71d08f248d2d73b4ce2ffd` — fake-backend command tests; validated R06 code head.
+- `ea5c94f3a7e02adc23442df4bd00ffa9e256bdfb` — detailed roadmap completion record and pointer advance.
 
-### R05 validation
+### R06 validation
 
-`ShaderLabControlCatalogTest` verifies:
+`ShaderLabCommandApiTest` verifies:
 
-- exact 53-key value-control parity: **PASS**
-- exact 10-key action-only parity: **PASS**
-- clamping/integer behavior: **PASS**
-- fine/normal/coarse steps: **PASS**
-- high-precision constants/formatting: **PASS**
-- all 12 ordering relationships: **PASS**
-- changed-control-wins normalization: **PASS**
-- all 5 virtual-master dependencies: **PASS**
-- typed preset bounds/names: **PASS**
-- preset eligibility metadata: **PASS**
+- clamping through the R05 catalog: **PASS**
+- ordered-pair normalization: **PASS**
+- exact fine/normal/coarse adjustment steps: **PASS**
+- group/control selection without runtime mutation: **PASS**
+- preview start/end/fallback semantics: **PASS**
+- typed preset/system action routing: **PASS**
+- typed morph validation and amount clamping: **PASS**
+- typed diagnostic view mapping: **PASS**
+- destructive-confirmation metadata reuse: **PASS**
+- NaN/infinite value rejection before backend mutation: **PASS**
+- backend exception → typed failure propagation: **PASS**
+
+Source audit:
+
+- Compose dependency: **NONE**.
+- Direct MPV/Lua transport dependency: **NONE**.
+- Android UI/key/pointer dependency: **NONE**.
 
 Dedicated phone-test workflow:
 
-- `Refactor Dev APK` run `#79`
-- Run ID: `32416421098`
-- Job ID: `96578517197`
-- Validated branch code/doc head before completion bookkeeping: `cf1a0a20d8525b133a4a4b01d790afdd56df1dc7`
-- Unit tests: **PASS**
-- Signed Debug build: **PASS**
-- Package/version/signing certificate verification: **PASS**
-- arm64 artifact ID: `9424196537`, digest `sha256:81c0b54b1c1d6b920cdb1acb55498862ccc446e3322fb80e3c83c0f6db68152c`
-- universal artifact ID: `9424197412`, digest `sha256:8d7a60f6a776fd6f3f60a71d7366a59560f4626ecfad5a809237884f5d3b98a4`
+- `Refactor Dev APK` run `#87`
+- Run ID: `32432134649`
+- Job ID: `96625836155`
+- Validated branch code head: `d693d238fa6e8c6d5e71d08f248d2d73b4ce2ffd`
+- PR merge-test SHA: `766c7793107d65fb0407524e015fe5ccf3e2b4e8`
+- Unit tests: **PASS** — Gradle `BUILD SUCCESSFUL`.
+- Signed Debug build: **PASS**.
+- Package/version/signing certificate verification: **PASS**.
+- arm64 versionCode: `1787271522`.
+- universal versionCode: `1787271520`.
+- signer certificate remains `b582b2f37a1bfbf1089405941b20b184c104f35a0ba38068f8ffde74fd3965a2`.
+- arm64 artifact ID: `9429556059`, digest `sha256:55ad880f89d8b6b494ab2c0c480fdeecd6fd9964cbbb32154aed268b93bbb16b`.
+- universal artifact ID: `9429556615`, digest `sha256:f37d38cb58dd455e16b5c2657a7de014fd70d7fa1dcd88d7e71a8e9649de0a2c`.
 
 Normal CI/CD:
 
-- `CI/CD Build` run `#32`
-- Run ID: `32416421058`
-- Job ID: `96578589838`
-- Gradle build: **PASS**
-- arm64/armeabi-v7a/universal/x86/x86_64 uploads: **PASS**
+- `CI/CD Build` run `#36`
+- Run ID: `32432134575`
+- Job ID: `96625836756`
+- Gradle build: **PASS**.
+- arm64/armeabi-v7a/universal/x86/x86_64 uploads: **PASS**.
 
-### R05 acceptance result
+### R06 acceptance result
 
-- Canonical metadata is typed and outside UI: **PASS**.
-- Catalog is unit-tested: **PASS**.
-- Legacy catalog has no unexplained omissions: **PASS**.
+- Semantic API has no Compose dependency: **PASS**.
+- Commands are unit-tested with a fake backend: **PASS**.
 - Branch builds and signed phone-test APK verifies: **PASS**.
-- Device test required by R05: **NO** — roadmap validation is unit tests; no R05 device-only behavior was introduced.
+- Device test required by R06: **NO** — R06 validation is unit tests; no concrete MPV bridge/device synchronization was introduced.
 
-**R05 COMPLETE.**
+**R06 COMPLETE.**
 
 ## Next step
 
-### R06 — Build semantic Shader Lab command API
+### R07 — Refactor MPV bridge and observable state transport
 
 **Status:** `TODO`
 
-R06 will define the input-neutral semantic command layer used later by touch, TV/D-pad, presets, tests, and the MPV bridge. It must not depend on Compose and must be testable against a fake backend.
+R07 will implement the concrete MPV/Lua backend for the R06 semantic API and observable typed state transport, replacing UI-oriented polling architecture where possible. Its roadmap validation includes fake-backend tests plus a real-device synchronization smoke test.
 
-Do not implement R07 or later work until R06 is completed and validated.
+Do not implement R08 or later work until R07 is completed and validated.
