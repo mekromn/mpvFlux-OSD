@@ -1,11 +1,12 @@
 {
   "canonicalWorkspace": "/storage/emulated/0/mpv",
   "controlCatalogVersion": "legacy-v6.1.1",
-  "engineVersion": "6.1.1-source-r07-state-3",
+  "engineVersion": "6.1.1-source-r08-resident-1",
   "entrypoints": {
     "controller": "scripts/pixel9-shader-lab.lua",
     "inputConfig": "config/input.conf",
     "mpvConfig": "config/mpv.conf",
+    "residentShader": "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl",
     "shaderTemplate": "shaders/pixel9-perceptual-expansion-template.glsl.txt",
     "touchDiagnostic": "scripts/mpvflux-touch-diagnostic.lua"
   },
@@ -16,9 +17,9 @@
       "sha256": "4cb8d46deb3fafd1b9b4fae7ce0c89d224beceab3351e3abab8530499187e8e4"
     },
     {
-      "bytes": 2705,
+      "bytes": 2837,
       "path": "config/mpv.conf",
-      "sha256": "c889f787c341bc258eb55ebb349b1adec0f2382aa1fdd73806529292b337da01"
+      "sha256": "aac64fdccb46489b4211fc15d4db822ed6dfea8cc1f5cb9303bae67858825d1a"
     },
     {
       "bytes": 8294,
@@ -49,6 +50,11 @@
       "bytes": 12193,
       "path": "shaders/pixel9-perceptual-expansion-known-good-v3.1.glsl",
       "sha256": "1663f54be13678688f4babfd68b360c1797b1057101b3c460c663ea66694c988"
+    },
+    {
+      "bytes": 11163,
+      "path": "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl",
+      "sha256": "5d9058eeeb1dd15c429c856373feeb0574e7dc0aa92b48d05817620b028869ee"
     },
     {
       "bytes": 12193,
@@ -93,14 +99,14 @@
     "input-conf=\"/storage/emulated/0/mpv/input.conf\"",
     "sid=no",
     "[pixel9-sdr-expanded-v3.1]",
-    "profile-desc=Pixel 9 Pro XL V3.1 live shader lab",
+    "profile-desc=Pixel 9 Pro XL V3.1 resident shader lab",
     "profile-cond=(get(\"video-params/gamma\",\"\") ~= \"\" and get(\"video-params/gamma\",\"\") ~= \"pq\" and get(\"video-params/gamma\",\"\") ~= \"hlg\")",
     "profile-restore=copy",
     "SDR-intensity=4.16",
     "target-peak=auto",
     "target-colorspace-hint=no",
     "inverse-tone-mapping=no",
-    "glsl-shaders=\"/storage/emulated/0/mpv/shaders/pixel9-perceptual-expansion-runtime-a.glsl\""
+    "glsl-shaders=\"/storage/emulated/0/mpv/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl\""
   ],
   "schemaVersion": 1,
   "sourceProvenance": {
@@ -110,6 +116,7 @@
     "payloadParts": 8,
     "payloadSha256": "e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6",
     "r07StateTransport": "R07 state-3: event-driven native state with Android MPVLib compatibility fallback through the string-converted user-data root map.",
+    "r08ResidentTransport": "R08 resident-1: vo=gpu PARAM shader with complete glsl-shader-opts transport; legacy A/B generation retained only as compatibility fallback.",
     "repository": "mekromn/mpvFlux-OSD"
   }
 }
