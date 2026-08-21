@@ -113,18 +113,14 @@ internal class LibMpvShaderLabTransport : ShaderLabMpvTransport {
     }
 
   override fun attach(listener: (String, ShaderLabMpvValue) -> Unit) {
-    if (attached) {
-      MPVLib.removeObserver(observer)
-    }
+    if (attached) MPVLib.removeObserver(observer)
     this.listener = listener
     MPVLib.addObserver(observer)
     attached = true
   }
 
   override fun detach() {
-    if (attached) {
-      runCatching { MPVLib.removeObserver(observer) }
-    }
+    if (attached) runCatching { MPVLib.removeObserver(observer) }
     attached = false
     listener = null
   }
@@ -147,11 +143,12 @@ internal class LibMpvShaderLabTransport : ShaderLabMpvTransport {
 }
 
 /**
- * Concrete observable MPV/Lua backend for the R06 semantic command API.
+ * Observable Shader Lab backend.
  *
- * R07 intentionally does not implement shader write coalescing or rollback;
- * that belongs to R08. This bridge owns transport, serialization, state decode,
- * and property observation only. There is no periodic UI polling loop.
+ * R07 established the event-driven MPV/Lua state bridge. R08 keeps that
+ * boundary, but moves ordinary shader tuning to one resident vo=gpu shader:
+ * validated values -> complete glsl-shader-opts -> resident PARAM uniforms.
+ * Normal tuning performs no shader file I/O and no shader list mutation.
  */
 class MpvShaderLabBridge internal constructor(
   private val transport: ShaderLabMpvTransport,
@@ -177,6 +174,7 @@ class MpvShaderLabBridge internal constructor(
   )
 
   private val commandLock = Any()
+  private val residentGpu = ShaderLabResidentGpuTransport(transport)
   private val _state = MutableStateFlow(ShaderLabBackendState())
   val state: StateFlow<ShaderLabBackendState> = _state.asStateFlow()
 
@@ -186,12 +184,9 @@ class MpvShaderLabBridge internal constructor(
   private var attached = false
   private var enginePrepared = false
   private var lastEventError: String? = null
+  private var adoptResidentFromLuaOnIdle = false
 
-  /**
-   * Called from BaseMPVView.initOptions(), after mpv_create and before
-   * mpv_initialize. Loading the controller through the script option here is
-   * deterministic on libmpv and avoids relying on runtime load-script support.
-   */
+  /** Called after mpv_create and before mpv_initialize. */
   fun prepareForMpvInitialization(): String? =
     synchronized(commandLock) {
       runCatching {
@@ -208,9 +203,7 @@ class MpvShaderLabBridge internal constructor(
         syncProbe.stage("engine_prepare")
         ensureEnginePrepared()
         syncProbe.stage("engine_ready")
-        if (attached) {
-          transport.detach()
-        }
+        if (attached) transport.detach()
         transport.attach(::onObservedProperty)
         attached = true
         _state.value = _state.value.copy(connected = true)
@@ -230,9 +223,14 @@ class MpvShaderLabBridge internal constructor(
           transport.getDouble(spec.id.legacyKey)?.let { consumeDirectControlValue(spec.id, it) }
         }
 
-        // mpv explicitly documents that load-script initialization waiting is
-        // undefined across versions. Use a short bounded handshake/readback
-        // sequence instead of assuming the script is ready synchronously.
+        residentGpu.initialize(_state.value.values, _state.value.sourceKind)
+        residentGpu.setOriginalView(
+          _state.value.bypassed || _state.value.previewOriginal,
+          _state.value.sourceKind,
+        )
+        _state.value = _state.value.copy(values = residentGpu.overlayResidentValues(_state.value.values))
+
+        // load-script readiness is not synchronous across mpv versions.
         if (nativeState.isNullOrBlank()) {
           syncProbe.stage("load_script_requested", CONTROLLER_PATH)
           transport.command("load-script", CONTROLLER_PATH)
@@ -266,9 +264,10 @@ class MpvShaderLabBridge internal constructor(
 
   fun detach() {
     synchronized(commandLock) {
-      runCatching { transport.detach() }
-        .onFailure(::recordTransportFailure)
+      runCatching { transport.detach() }.onFailure(::recordTransportFailure)
       attached = false
+      residentGpu.onDetached()
+      adoptResidentFromLuaOnIdle = false
       _state.value =
         _state.value.copy(
           connected = false,
@@ -280,32 +279,60 @@ class MpvShaderLabBridge internal constructor(
   }
 
   fun requestStateRefresh() {
-    serializedCommand {
-      requestNativeStateHandshake("manual")
-    }
+    serializedCommand { requestNativeStateHandshake("manual") }
   }
 
   fun toggleLegacyOverlay() {
     runCatching {
-      serializedCommand {
-        transport.command("script-message", "p9lab-toggle-ui")
-      }
+      serializedCommand { transport.command("script-message", "p9lab-toggle-ui") }
     }
   }
 
   override fun snapshotValues(): Map<ShaderLabControlId, Double> = _state.value.values
 
+  /**
+   * R08 ordinary tuning path. A shader/master change sends one complete
+   * glsl-shader-opts value; MPV properties remain direct MPV properties.
+   * Only non-render controller compatibility values still use Lua messages.
+   */
   override fun setValues(values: Map<ShaderLabControlId, Double>) {
     serializedCommand {
-      ShaderLabControlCatalog.controls.forEach { spec ->
-        val value = values[spec.id] ?: return@forEach
-        transport.command(
-          "script-message",
-          "p9lab-native-set",
-          spec.id.legacyKey,
-          formatDouble(value),
-        )
+      values.forEach { (id, value) ->
+        require(value.isFinite()) { "Non-finite Shader Lab value for ${id.legacyKey}: $value" }
       }
+
+      val merged = _state.value.values.toMutableMap()
+      values.forEach { (id, value) -> merged[id] = ShaderLabControlCatalog.spec(id).clamp(value) }
+      val normalized = ShaderLabControlCatalog.normalizeValues(merged, values.keys.singleOrNull())
+
+      if (values.keys.any(residentGpu::isResidentControl)) {
+        residentGpu.publish(normalized)
+      }
+
+      values.keys.forEach { id ->
+        val spec = ShaderLabControlCatalog.spec(id)
+        when {
+          residentGpu.isResidentControl(id) -> Unit
+          spec.kind == ShaderLabControlKind.MPV_PROPERTY -> {
+            transport.command("set", spec.id.legacyKey, formatDouble(normalized.getValue(id)))
+          }
+          else -> {
+            if (spec.kind == ShaderLabControlKind.MORPH) adoptResidentFromLuaOnIdle = true
+            transport.command(
+              "script-message",
+              "p9lab-native-set",
+              spec.id.legacyKey,
+              formatDouble(normalized.getValue(id)),
+            )
+          }
+        }
+      }
+
+      _state.value =
+        _state.value.copy(
+          values = residentGpu.overlayResidentValues(normalized),
+          lastError = null,
+        )
     }
   }
 
@@ -319,25 +346,25 @@ class MpvShaderLabBridge internal constructor(
     scriptMessage("p9lab-native-preview-toggle")
 
   override fun revertVideoStart() =
-    scriptMessage("p9lab-native-revert-video-start")
+    scriptMessageAdoptingValues("p9lab-native-revert-video-start")
 
   override fun resetAll() =
-    scriptMessage("p9lab-native-reset-all")
+    scriptMessageAdoptingValues("p9lab-native-reset-all")
 
   override fun saveUserPreset(preset: ShaderLabPresetId.User) =
     scriptMessage("p9lab-native-user-save", preset.slot.toString())
 
   override fun loadUserPreset(preset: ShaderLabPresetId.User) =
-    scriptMessage("p9lab-native-user-load", preset.slot.toString())
+    scriptMessageAdoptingValues("p9lab-native-user-load", preset.slot.toString())
 
   override fun clearUserPreset(preset: ShaderLabPresetId.User) =
     scriptMessage("p9lab-native-user-clear", preset.slot.toString())
 
   override fun loadBuiltInPreset(preset: ShaderLabPresetId.BuiltIn) =
-    scriptMessage("p9lab-native-builtin-load", preset.slot.toString())
+    scriptMessageAdoptingValues("p9lab-native-builtin-load", preset.slot.toString())
 
   override fun morph(from: ShaderLabPresetId, to: ShaderLabPresetId, amount: Double) =
-    scriptMessage(
+    scriptMessageAdoptingValues(
       "p9lab-native-morph",
       from.toLegacyMorphReference().toString(),
       to.toLegacyMorphReference().toString(),
@@ -348,7 +375,7 @@ class MpvShaderLabBridge internal constructor(
     scriptMessage("p9lab-native-save-state")
 
   override fun loadState() =
-    scriptMessage("p9lab-native-load-state")
+    scriptMessageAdoptingValues("p9lab-native-load-state")
 
   private fun ensureEnginePrepared() {
     if (enginePrepared) return
@@ -374,7 +401,12 @@ class MpvShaderLabBridge internal constructor(
         ?.takeIf { it.isNotBlank() }
 
   private fun scriptMessage(name: String, vararg args: String) {
+    serializedCommand { transport.command("script-message", name, *args) }
+  }
+
+  private fun scriptMessageAdoptingValues(name: String, vararg args: String) {
     serializedCommand {
+      adoptResidentFromLuaOnIdle = true
       transport.command("script-message", name, *args)
     }
   }
@@ -392,30 +424,59 @@ class MpvShaderLabBridge internal constructor(
   }
 
   private fun onObservedProperty(property: String, value: ShaderLabMpvValue) {
-    when {
-      property == NATIVE_STATE_PROPERTY && value is ShaderLabMpvValue.Text -> {
-        consumeNativeState(value.value)
+    synchronized(commandLock) {
+      when {
+        property == NATIVE_STATE_PROPERTY && value is ShaderLabMpvValue.Text -> {
+          consumeNativeState(value.value)
+        }
+        property == USER_DATA_ROOT_PROPERTY && value is ShaderLabMpvValue.Text -> {
+          ShaderLabUserDataCodec.extractNativeState(value.value)?.let(::consumeNativeState)
+        }
+        property == SOURCE_GAMMA_PROPERTY && value is ShaderLabMpvValue.Text -> {
+          consumeSourceGamma(value.value)
+        }
+        value is ShaderLabMpvValue.Number -> {
+          MPV_PROPERTY_BY_KEY[property]?.let { consumeDirectControlValue(it, value.value) }
+        }
+        value is ShaderLabMpvValue.Integer -> {
+          MPV_PROPERTY_BY_KEY[property]?.let { consumeDirectControlValue(it, value.value.toDouble()) }
+        }
+        else -> Unit
       }
-      property == USER_DATA_ROOT_PROPERTY && value is ShaderLabMpvValue.Text -> {
-        ShaderLabUserDataCodec.extractNativeState(value.value)?.let(::consumeNativeState)
-      }
-      property == SOURCE_GAMMA_PROPERTY && value is ShaderLabMpvValue.Text -> {
-        consumeSourceGamma(value.value)
-      }
-      value is ShaderLabMpvValue.Number -> {
-        MPV_PROPERTY_BY_KEY[property]?.let { consumeDirectControlValue(it, value.value) }
-      }
-      value is ShaderLabMpvValue.Integer -> {
-        MPV_PROPERTY_BY_KEY[property]?.let { consumeDirectControlValue(it, value.value.toDouble()) }
-      }
-      else -> Unit
     }
   }
 
   private fun consumeNativeState(raw: String) {
-    val decoded = ShaderLabNativeStateCodec.decode(raw, _state.value)
+    val previous = _state.value
+    var decoded = ShaderLabNativeStateCodec.decode(raw, previous)
+    val legacyShaderSwapChanged = decoded.shaderSwapCount != previous.shaderSwapCount
+
+    if (residentGpu.isAuthoritative()) {
+      if (!decoded.applyBusy && (adoptResidentFromLuaOnIdle || legacyShaderSwapChanged)) {
+        runCatching { residentGpu.adoptLegacyValues(decoded.values, decoded.sourceKind) }
+          .onFailure(::recordTransportFailure)
+        adoptResidentFromLuaOnIdle = false
+      } else {
+        if (decoded.sourceKind != previous.sourceKind) {
+          runCatching { residentGpu.reconcileSource(decoded.sourceKind) }
+            .onFailure(::recordTransportFailure)
+        }
+      }
+
+      if (decoded.bypassed != previous.bypassed || decoded.previewOriginal != previous.previewOriginal) {
+        runCatching {
+          residentGpu.setOriginalView(
+            decoded.bypassed || decoded.previewOriginal,
+            decoded.sourceKind,
+          )
+        }.onFailure(::recordTransportFailure)
+      }
+
+      decoded = decoded.copy(values = residentGpu.overlayResidentValues(decoded.values))
+    }
+
     _state.value = decoded.copy(connected = true)
-    runCatching { syncProbe.record(decoded) }
+    runCatching { syncProbe.record(_state.value) }
     _events.tryEmit(ShaderLabBridgeEvent.SnapshotReceived(decoded.snapshotSerial))
     decoded.lastError?.let(::emitBackendErrorIfChanged)
   }
@@ -423,12 +484,23 @@ class MpvShaderLabBridge internal constructor(
   private fun consumeSourceGamma(gamma: String) {
     val normalized = gamma.trim().lowercase(Locale.US)
     val kind = sourceKind(normalized)
+    val previous = _state.value
     _state.value =
-      _state.value.copy(
+      previous.copy(
         sourceGamma = normalized.ifBlank { null },
         sourceKind = kind,
         sdrEligible = kind == ShaderLabSourceKind.SDR,
       )
+
+    if (residentGpu.isAuthoritative() && kind != previous.sourceKind) {
+      runCatching {
+        residentGpu.reconcileSource(kind)
+        residentGpu.setOriginalView(
+          _state.value.bypassed || _state.value.previewOriginal,
+          kind,
+        )
+      }.onFailure(::recordTransportFailure)
+    }
   }
 
   private fun consumeDirectControlValue(id: ShaderLabControlId, value: Double) {
@@ -541,9 +613,7 @@ internal object ShaderLabNativeStateCodec {
     val fields = linkedMapOf<String, String>()
     raw.lineSequence().forEach { line ->
       val separator = line.indexOf('=')
-      if (separator > 0) {
-        fields[line.substring(0, separator)] = line.substring(separator + 1)
-      }
+      if (separator > 0) fields[line.substring(0, separator)] = line.substring(separator + 1)
     }
 
     val values = previous.values.toMutableMap()
