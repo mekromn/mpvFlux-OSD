@@ -21,6 +21,10 @@ internal data class ShaderLabR08ResidentPublishSample(
   val decoderFrameDropCount: Long?,
   val mistimedFrameCount: Long?,
   val voDelayedFrameCount: Long?,
+  val videoOutput: String? = null,
+  val gpuApi: String? = null,
+  val gpuContext: String? = null,
+  val hwdecCurrent: String? = null,
 )
 
 internal interface ShaderLabR08ResidentProbe {
@@ -98,6 +102,10 @@ internal class ShaderLabR08ProbedMpvTransport(
         decoderFrameDropCount = safeLong("decoder-frame-drop-count"),
         mistimedFrameCount = safeLong("mistimed-frame-count"),
         voDelayedFrameCount = safeLong("vo-delayed-frame-count"),
+        videoOutput = safeString("vo"),
+        gpuApi = safeString("gpu-api"),
+        gpuContext = safeString("gpu-context"),
+        hwdecCurrent = safeString("hwdec-current"),
       )
     runCatching { probe.residentPublish(sample) }
   }
@@ -143,9 +151,15 @@ internal class FileShaderLabR08ResidentProbe(
   @Synchronized
   override fun attach() {
     baselineShader = captureFileSnapshot(residentShader)
+    lastSample = null
+    burstStartSample = null
     burstActive = false
     burstUpdateCount = 0L
     burstShaderListMutations = 0L
+    totalUpdateCount = 0L
+    totalCommandLatencyNanos = 0L
+    maxCommandLatencyNanos = 0L
+    burstStartThermal = null
     handler.removeCallbacks(idleWrite)
   }
 
@@ -211,6 +225,10 @@ internal class FileShaderLabR08ResidentProbe(
         appendLine("stage=resident_parameter_idle")
         appendLine("source_gamma=${sample.sourceGamma.orEmpty()}")
         appendLine("source_kind=$sourceKind")
+        appendLine("vo=${sample.videoOutput.orEmpty()}")
+        appendLine("gpu_api=${sample.gpuApi.orEmpty()}")
+        appendLine("gpu_context=${sample.gpuContext.orEmpty()}")
+        appendLine("hwdec_current=${sample.hwdecCurrent.orEmpty()}")
         appendLine("resident_shader_attached=$residentAttached")
         appendLine("parameter_publish_count=$totalUpdateCount")
         appendLine("burst_publish_count=$burstUpdateCount")
