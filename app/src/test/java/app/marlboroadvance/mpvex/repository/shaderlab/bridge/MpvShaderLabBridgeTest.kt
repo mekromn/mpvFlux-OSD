@@ -53,9 +53,8 @@ class MpvShaderLabBridgeTest {
         listOf("load-script", MpvShaderLabBridge.CONTROLLER_PATH),
       ),
     )
-    assertEquals(
-      listOf("script-message", "p9lab-native-state"),
-      transport.commands.last(),
+    assertTrue(
+      transport.commands.none { it == listOf("script-message", "p9lab-native-state") },
     )
   }
 
