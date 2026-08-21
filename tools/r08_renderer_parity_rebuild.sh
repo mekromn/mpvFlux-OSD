@@ -202,7 +202,18 @@ grep -F -- '-Dvk-proc-addr=enabled' scripts/libplacebo.sh
 grep -F -- '-Dvulkan=enabled' scripts/mpv.sh
 grep -F '#define SHADER_MAX_PARAMS 64' deps/mpv/video/out/gpu/user_shaders.h
 
+set +e
 ./buildall.sh --arch arm64 mpv 2>&1 | tee /tmp/r08-renderer-parity-native-build.log
+build_rc=${PIPESTATUS[0]}
+set -e
+if (( build_rc != 0 )); then
+    echo '=== R08 renderer parity compact failure ===' >&2
+    grep -nEi '(^|[^[:alpha:]])(error|fatal|failed|meson|shaderc|ndk|vulkan)([^[:alpha:]]|$)' \
+      /tmp/r08-renderer-parity-native-build.log 2>/dev/null | tail -n 120 >&2 || true
+    echo '=== R08 native log tail ===' >&2
+    tail -n 100 /tmp/r08-renderer-parity-native-build.log >&2 2>/dev/null || true
+    exit "$build_rc"
+fi
 
 LIB=prefix/arm64/lib/libmpv.so
 test -f "$LIB"
