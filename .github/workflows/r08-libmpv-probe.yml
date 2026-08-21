@@ -42,71 +42,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-          import json
-
-          def replace_once(path: Path, old: str, new: str):
-              text = path.read_text()
-              if new in text:
-                  return False
-              count = text.count(old)
-              assert count == 1, f"{path}: expected one anchor, found {count}"
-              path.write_text(text.replace(old, new, 1))
-              return True
-
-          lua = Path('app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua')
-          lua_anchor = '''local function native_set_by_key(key, value)\n'''
-          lua_insert = '''-- R08 resident transport compatibility cache. Android owns ordinary\n-- resident GPU tuning, but legacy Lua preset/state files still serialize B.\n-- This updates that in-memory bank without applying properties, generating\n-- GLSL, writing runtime shader files, or changing the shader list.\nlocal function resident_cache_sync(snapshot)\n    if type(snapshot) ~= "string" then return false end\n    local touched = false\n    for token in snapshot:gmatch("[^;]+") do\n        local key, value = token:match("^([^=]+)=([%+%-%.%deE]+)$")\n        local it = key and by_key[key] or nil\n        local num = tonumber(value)\n        if it and it.kind ~= "action" and num then\n            B[key] = round_if_needed(clamp(num, it.min, it.max), it.integer)\n            if it.kind == "granularity" then step_mode = B[key] end\n            touched = true\n        end\n    end\n    enforce_order(B, "")\n    sync_granularity_item()\n    return touched\nend\n\nlocal function native_set_by_key(key, value)\n'''
-          replace_once(lua, lua_anchor, lua_insert)
-
-          reg_anchor = '''mp.register_script_message("p9lab-native-state", publish_native_state)\nmp.register_script_message("p9lab-native-set", native_set_by_key)\n'''
-          reg_insert = '''mp.register_script_message("p9lab-native-state", publish_native_state)\nmp.register_script_message("p9lab-native-set", native_set_by_key)\nmp.register_script_message("p9lab-native-user-save-r08", function(slot, snapshot)\n    native_invoke("Save user preset", false, function()\n        resident_cache_sync(snapshot)\n        B.USER_SLOT = clamp(tonumber(slot) or B.USER_SLOT, 1, 10)\n        return save_user_preset(B.USER_SLOT)\n    end)\nend)\nmp.register_script_message("p9lab-native-save-state-r08", function(snapshot)\n    native_invoke("Save state", false, function()\n        resident_cache_sync(snapshot)\n        return save_state()\n    end)\nend)\n'''
-          replace_once(lua, reg_anchor, reg_insert)
-
-          bridge = Path('app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt')
-          replace_once(
-              bridge,
-              '''  override fun saveUserPreset(preset: ShaderLabPresetId.User) =\n    scriptMessage("p9lab-native-user-save", preset.slot.toString())\n''',
-              '''  override fun saveUserPreset(preset: ShaderLabPresetId.User) =\n    scriptMessage(\n      "p9lab-native-user-save-r08",\n      preset.slot.toString(),\n      luaStateSnapshot(),\n    )\n''',
-          )
-          replace_once(
-              bridge,
-              '''  override fun saveState() =\n    scriptMessage("p9lab-native-save-state")\n''',
-              '''  override fun saveState() =\n    scriptMessage("p9lab-native-save-state-r08", luaStateSnapshot())\n''',
-          )
-          bridge_helper_anchor = '''    private fun formatDouble(value: Double): String = String.format(Locale.US, "%.17g", value)\n\n    private fun sourceKind(gamma: String): ShaderLabSourceKind =\n'''
-          bridge_helper_insert = '''    private fun formatDouble(value: Double): String = String.format(Locale.US, "%.17g", value)\n\n    private fun luaStateSnapshot(): String {\n      val normalized = ShaderLabControlCatalog.normalizeValues(_state.value.values)\n      return ShaderLabControlCatalog.controls.joinToString(";") { spec ->\n        "${spec.id.legacyKey}=${formatDouble(normalized.getValue(spec.id))}"\n      }\n    }\n\n    private fun sourceKind(gamma: String): ShaderLabSourceKind =\n'''
-          replace_once(bridge, bridge_helper_anchor, bridge_helper_insert)
-
-          test = Path('app/src/test/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridgeTest.kt')
-          test_anchor = '''  @Test\n  fun externalMpvPropertyObservationUpdatesStateImmediately() {\n'''
-          test_insert = '''  @Test\n  fun saveCompatibilityActionsCarryCurrentResidentAndMpvStateWithoutLegacyApply() {\n    val transport = FakeTransport()\n    val bridge = MpvShaderLabBridge(transport)\n    bridge.attach()\n    bridge.setValues(\n      linkedMapOf(\n        ShaderLabControlId.LUMA_CONTRAST to 0.31,\n        ShaderLabControlId.MPV_BRIGHTNESS to 4.25,\n      ),\n    )\n    transport.commands.clear()\n\n    bridge.saveUserPreset(ShaderLabPresetId.User(3))\n    bridge.saveState()\n\n    val preset = transport.commands.single { it.getOrNull(1) == "p9lab-native-user-save-r08" }\n    assertEquals("3", preset[2])\n    assertTrue(preset[3].contains("LUMA_CONTRAST=0.31000000000000000"))\n    assertTrue(preset[3].contains("brightness=4.2500000000000000"))\n    val state = transport.commands.single { it.getOrNull(1) == "p9lab-native-save-state-r08" }\n    assertTrue(state[2].contains("LUMA_CONTRAST=0.31000000000000000"))\n    assertTrue(state[2].contains("brightness=4.2500000000000000"))\n    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-set" })\n    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })\n  }\n\n  @Test\n  fun externalMpvPropertyObservationUpdatesStateImmediately() {\n'''
-          replace_once(test, test_anchor, test_insert)
-
-          manifest_path = Path('app/src/main/assets/mpvlab/source/engine-manifest.json')
-          manifest = json.loads(manifest_path.read_text())
-          manifest['engineVersion'] = '6.1.1-source-r08-resident-2'
-          lua_bytes = lua.read_bytes()
-          for entry in manifest['files']:
-              if entry['path'] == 'scripts/pixel9-shader-lab.lua':
-                  entry['bytes'] = len(lua_bytes)
-                  entry['sha256'] = hashlib.sha256(lua_bytes).hexdigest()
-                  break
-          else:
-              raise AssertionError('Lua payload missing from engine manifest')
-          manifest['sourceProvenance']['r08ResidentTransport'] = (
-              'R08 resident-2: vo=gpu PARAM shader with complete glsl-shader-opts transport; '
-              'Lua preset/state saves receive state-only cache synchronization without ordinary GLSL regeneration.'
-          )
-          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
-          PY
-
+          python3 tools/r08_finalize_resident.py
           grep -F 'p9lab-native-user-save-r08' app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
           grep -F 'p9lab-native-save-state-r08' app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua
           grep -F 'luaStateSnapshot()' app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/MpvShaderLabBridge.kt
           python3 tools/verify_mpvlab_manifest.py
+          python3 - <<'PY'
+          from pathlib import Path
+          shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
+          assert '@@' not in shader, 'resident shader contains unresolved template token'
+          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
+          print('Resident shader PARAM audit PASS: 39')
+          PY
 
       - name: Install native build dependencies
         if: steps.trigger.outputs.enabled == 'yes'
@@ -114,13 +61,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm lua5.2
+          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm lua5.2 zip unzip binutils
           python3 -m pip install --user --upgrade 'meson>=1.6.1'
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/meson" --version
           lua5.2 -e 'assert(loadfile("app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua"))'
 
-      - name: Fetch pinned mpv-android build harness
+      - name: Fetch pinned native build harness
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
@@ -129,7 +76,7 @@ jobs:
           cd native/mpv-android
           git checkout fd17fb02cfb8c8b5c12621c2c90769685d635d91
 
-      - name: Fetch dependencies and pin proven mpv renderer baseline
+      - name: Fetch dependencies and pin proven renderer baseline
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
@@ -173,85 +120,129 @@ jobs:
           grep -F '#define SHADER_MAX_PARAMS 64' buildscripts/deps/mpv/video/out/gpu/user_shaders.h
           grep -F -- '-Wl,-z,common-page-size=16384' buildscripts/buildall.sh
 
-      - name: Build arm64 custom libmpv and AAR
+      - name: Build arm64 custom libmpv
         if: steps.trigger.outputs.enabled == 'yes'
         shell: bash
         env:
-          DONT_BUILD_RELEASE: ''
           GRADLE_OPTS: -Xmx4G
         run: |
           set -euo pipefail
           cd native/mpv-android/buildscripts
           ./buildall.sh --arch arm64 mpv 2>&1 | tee /tmp/r08-native-build.log
-          ./buildall.sh --arch arm64 mpv-android 2>&1 | tee -a /tmp/r08-native-build.log
 
-      - name: Collect native failure diagnostics
+      - name: Verify PARAM feature and custom libmpv alignment
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so
+          grep -F '#define SHADER_MAX_PARAMS 64' native/mpv-android/buildscripts/deps/mpv/video/out/gpu/user_shaders.h
+          git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' | tee /tmp/r08-mpv-commits.txt
+          readelf -lW native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so | tee /tmp/r08-libmpv-program-headers.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('/tmp/r08-libmpv-program-headers.txt').read_text()
+          loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
+          assert loads, 'no LOAD segments found in custom libmpv'
+          bad = [line for line in loads if int(line.split()[-1], 16) < 0x4000]
+          assert not bad, 'custom libmpv LOAD segments below 16 KB alignment:\n' + '\n'.join(bad)
+          print('Custom libmpv 16 KB ELF LOAD alignment PASS')
+          PY
+
+      - name: Preserve MPVLib wrapper and replace only libmpv
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_AAR=app/libs/mpv-android-lib-v0.0.1.aar
+          test -f "$BASE_AAR"
+          rm -rf native/base-aar
+          mkdir -p native/base-aar
+          unzip -q "$BASE_AAR" -d native/base-aar
+          test -f native/base-aar/classes.jar
+          test -f native/base-aar/jni/arm64-v8a/libmpv.so
+          test -f native/base-aar/jni/arm64-v8a/libplayer.so
+
+          jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
+          jar tf native/base-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
+
+          echo 'Existing renderer identity:'
+          strings native/base-aar/jni/arm64-v8a/libmpv.so | grep -m1 -E 'd54bad563|mpv 0\.41|0\.41\.0' || true
+          sha256sum native/base-aar/classes.jar native/base-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-wrapper-before.sha256
+
+          cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so native/base-aar/jni/arm64-v8a/libmpv.so
+          rm -f native/Chrovelo-R08-custom-libmpv-arm64.aar
+          (cd native/base-aar && zip -q -r ../Chrovelo-R08-custom-libmpv-arm64.aar .)
+
+          unzip -p native/Chrovelo-R08-custom-libmpv-arm64.aar classes.jar > /tmp/r08-classes.jar
+          jar tf /tmp/r08-classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
+          jar tf /tmp/r08-classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
+          sha256sum native/base-aar/classes.jar native/base-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-wrapper-after.sha256
+          diff -u /tmp/r08-wrapper-before.sha256 /tmp/r08-wrapper-after.sha256
+
+      - name: Verify every arm64 ELF in patched AAR is 16 KB compatible
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          root = Path('native/base-aar/jni/arm64-v8a')
+          sos = sorted(root.glob('*.so'))
+          assert sos, 'patched AAR contains no arm64 shared libraries'
+          report = []
+          bad = []
+          for so in sos:
+              text = subprocess.check_output(['readelf', '-lW', str(so)], text=True)
+              loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
+              assert loads, f'{so}: no LOAD segments'
+              minimum = min(int(line.split()[-1], 16) for line in loads)
+              report.append(f'{so.name}: min LOAD align=0x{minimum:x}')
+              if minimum < 0x4000:
+                  bad.append(f'{so.name}: 0x{minimum:x}')
+          Path('/tmp/r08-aar-elf-alignment.txt').write_text('\n'.join(report) + '\n')
+          print('\n'.join(report))
+          assert not bad, 'arm64 ELF files below 16 KB alignment: ' + ', '.join(bad)
+          print('Patched AAR arm64 16 KB alignment PASS')
+          PY
+
+      - name: Compile and test Chrovelo against patched AAR
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp native/Chrovelo-R08-custom-libmpv-arm64.aar app/libs/mpv-android-lib-v0.0.1.aar
+          chmod +x ./gradlew
+          python3 tools/verify_mpvlab_manifest.py
+          ./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --stacktrace 2>&1 | tee /tmp/r08-gradle.log
+
+      - name: Collect failure diagnostics
         if: failure() && steps.trigger.outputs.enabled == 'yes'
         shell: bash
         run: |
           set +e
-          mkdir -p r08-native-failure
-          cp /tmp/r08-native-build.log r08-native-failure/native-build.log 2>/dev/null || true
+          mkdir -p r08-failure
+          cp /tmp/r08-native-build.log r08-failure/native-build.log 2>/dev/null || true
+          cp /tmp/r08-gradle.log r08-failure/gradle.log 2>/dev/null || true
+          cp /tmp/r08-mpv-commits.txt r08-failure/mpv-commits.txt 2>/dev/null || true
+          cp /tmp/r08-libmpv-program-headers.txt r08-failure/libmpv-program-headers.txt 2>/dev/null || true
+          cp /tmp/r08-aar-elf-alignment.txt r08-failure/aar-elf-alignment.txt 2>/dev/null || true
           find native/mpv-android -type f -name 'meson-log.txt' -print | while read -r log; do
-            dest="r08-native-failure/${log#native/mpv-android/}"
+            dest="r08-failure/${log#native/mpv-android/}"
             mkdir -p "$(dirname "$dest")"
             cp "$log" "$dest"
           done
-          git -C native/mpv-android/buildscripts/deps/mpv status --short > r08-native-failure/mpv-status.txt 2>&1 || true
-          git -C native/mpv-android/buildscripts/deps/mpv log -4 --format='%H %s' > r08-native-failure/mpv-commits.txt 2>&1 || true
 
-      - name: Upload native failure diagnostics
+      - name: Upload failure diagnostics
         if: failure() && steps.trigger.outputs.enabled == 'yes'
         uses: actions/upload-artifact@v4
         with:
-          name: Chrovelo-R08-native-build-failure-${{ github.sha }}
-          path: r08-native-failure/
+          name: Chrovelo-R08-failure-${{ github.sha }}
+          path: r08-failure/
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Verify native feature and 16 KB ELF alignment
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd native/mpv-android
-          test -f lib/build/outputs/aar/lib-release.aar
-          test -f buildscripts/prefix/arm64/lib/libmpv.so
-          grep -F '#define SHADER_MAX_PARAMS 64' buildscripts/deps/mpv/video/out/gpu/user_shaders.h
-          git -C buildscripts/deps/mpv log -3 --oneline
-          readelf -lW buildscripts/prefix/arm64/lib/libmpv.so | tee /tmp/libmpv-program-headers.txt
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path('/tmp/libmpv-program-headers.txt').read_text()
-          loads = [line for line in text.splitlines() if line.lstrip().startswith('LOAD')]
-          assert loads, 'no LOAD segments found'
-          bad = []
-          for line in loads:
-              parts = line.split()
-              align = int(parts[-1], 16)
-              if align < 0x4000:
-                  bad.append(line)
-          assert not bad, 'LOAD segments below 16 KB alignment:\n' + '\n'.join(bad)
-          print('16 KB ELF LOAD alignment PASS')
-          PY
-          sha256sum lib/build/outputs/aar/lib-release.aar buildscripts/prefix/arm64/lib/libmpv.so
-
-      - name: Compile Chrovelo against replacement AAR
-        if: steps.trigger.outputs.enabled == 'yes'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp native/mpv-android/lib/build/outputs/aar/lib-release.aar app/libs/mpv-android-lib-v0.0.1.aar
-          chmod +x ./gradlew
-          python3 tools/verify_mpvlab_manifest.py
-          python3 - <<'PY'
-          from pathlib import Path
-          shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
-          assert '@@' not in shader, 'resident shader contains unresolved template token'
-          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
-          print('Resident shader PARAM audit PASS: 39')
-          PY
-          ./gradlew :app:testStandardDebugUnitTest :app:assembleStandardDebug --stacktrace
 
       - name: Package proof artifacts
         if: steps.trigger.outputs.enabled == 'yes'
@@ -259,11 +250,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p r08-proof
-          cp native/mpv-android/lib/build/outputs/aar/lib-release.aar r08-proof/Chrovelo-R08-custom-libmpv-arm64.aar
+          cp native/Chrovelo-R08-custom-libmpv-arm64.aar r08-proof/Chrovelo-R08-custom-libmpv-arm64.aar
           cp native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so r08-proof/libmpv-arm64.so
-          cp /tmp/libmpv-program-headers.txt r08-proof/libmpv-program-headers.txt
-          git -C native/mpv-android/buildscripts/deps/mpv log -3 --format='%H %s' > r08-proof/mpv-commits.txt
-          find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' -print -exec cp {} r08-proof/Chrovelo-R08-custom-libmpv-arm64-debug.apk \; | head -n 1
+          cp /tmp/r08-libmpv-program-headers.txt r08-proof/libmpv-program-headers.txt
+          cp /tmp/r08-aar-elf-alignment.txt r08-proof/aar-elf-alignment.txt
+          cp /tmp/r08-mpv-commits.txt r08-proof/mpv-commits.txt
+          APK=$(find app/build/outputs/apk -type f -name '*arm64-v8a*.apk' | head -n 1)
+          if [[ -z "$APK" ]]; then
+            APK=$(find app/build/outputs/apk -type f -name '*.apk' | head -n 1)
+          fi
+          test -n "$APK"
+          cp "$APK" r08-proof/Chrovelo-R08-resident-Pixel9ProXL-debug.apk
           sha256sum r08-proof/* > r08-proof/SHA256SUMS.txt
 
       - name: Upload R08 native proof
@@ -275,7 +272,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Commit validated R08 source and custom AAR
+      - name: Commit validated R08 source and patched AAR
         if: >-
           success() &&
           steps.trigger.outputs.enabled == 'yes' &&
