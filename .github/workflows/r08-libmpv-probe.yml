@@ -70,6 +70,10 @@ jobs:
             d54bad5636924ab3f39cb6e397b94b6aa8a7c433 \
             0d655fe66590009e1d77a17581257d677286531a
           git checkout --detach d54bad5636924ab3f39cb6e397b94b6aa8a7c433
+          # cherry-pick creates a new commit, so hosted runners need a local
+          # committer identity even though the upstream patch author is retained.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git cherry-pick 0d655fe66590009e1d77a17581257d677286531a
 
       - name: Apply Chrovelo narrow native patches
