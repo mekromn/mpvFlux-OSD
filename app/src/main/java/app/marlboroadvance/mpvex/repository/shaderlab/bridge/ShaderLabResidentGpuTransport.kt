@@ -5,6 +5,8 @@ import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlId
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlKind
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlSpec
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.roundToLong
 
 /**
@@ -14,6 +16,12 @@ import kotlin.math.roundToLong
  * shader file and never changes the glsl-shaders list. Shader attachment is
  * reconciled only when playback classification/comparison state changes or
  * when the legacy Lua compatibility path intentionally changed a runtime shader.
+ *
+ * Runtime option writes deliberately target mpv's explicit options/ property
+ * namespace. The original R08 test build used the bare option name and updated
+ * Android state optimistically; on-device testing showed values moving while
+ * the rendered image stayed unchanged. Every resident publish is now read back
+ * from libmpv before Android accepts it as authoritative.
  */
 internal class ShaderLabResidentGpuTransport(
   private val transport: ShaderLabMpvTransport,
@@ -37,16 +45,20 @@ internal class ShaderLabResidentGpuTransport(
 
   /**
    * Publish the complete resident parameter set. The old complete set is
-   * restored on a synchronous transport failure; no GLSL file is touched.
+   * restored on a synchronous transport/read-back failure; no GLSL file is touched.
    */
   fun publish(values: Map<ShaderLabControlId, Double>) {
     val normalized = ShaderLabControlCatalog.normalizeValues(values)
     val nextOptions = encodeOptions(normalized)
     val previousOptions = lastGoodOptions
     try {
-      transport.command("set", GLSL_SHADER_OPTS_PROPERTY, nextOptions)
+      setShaderOptions(nextOptions)
+      verifyShaderOptions(nextOptions)
     } catch (error: Throwable) {
-      runCatching { transport.command("set", GLSL_SHADER_OPTS_PROPERTY, previousOptions) }
+      runCatching {
+        setShaderOptions(previousOptions)
+        verifyShaderOptions(previousOptions)
+      }
       throw error
     }
     lastGoodValues = normalized
@@ -95,8 +107,14 @@ internal class ShaderLabResidentGpuTransport(
         removeManagedShader(LEGACY_RUNTIME_B_PATH)
         removeManagedShader(RESIDENT_SHADER_PATH)
         if (!originalViewActive) {
-          transport.command("change-list", "glsl-shaders", "append", RESIDENT_SHADER_PATH)
-          transport.command("set", GLSL_SHADER_OPTS_PROPERTY, lastGoodOptions)
+          // Set PARAM values before attaching the resident shader. vo=gpu reads
+          // glsl-shader-opts while constructing the hook, so this ordering also
+          // gives us a correct initial frame even on builds where a later option
+          // mutation would not recreate an already-loaded hook.
+          setShaderOptions(lastGoodOptions)
+          verifyShaderOptions(lastGoodOptions)
+          transport.command("change-list", GLSL_SHADERS_LIST_OPTION, "append", RESIDENT_SHADER_PATH)
+          verifyResidentShaderAttached()
         }
       }
       ShaderLabSourceKind.HDR_PQ,
@@ -118,13 +136,59 @@ internal class ShaderLabResidentGpuTransport(
     originalViewActive = false
   }
 
+  private fun setShaderOptions(options: String) {
+    transport.command("set", GLSL_SHADER_OPTS_PROPERTY, options)
+  }
+
+  private fun verifyShaderOptions(expected: String) {
+    val actual =
+      transport.getString(GLSL_SHADER_OPTS_PROPERTY)
+        ?: transport.getString(GLSL_SHADER_OPTS_BARE_PROPERTY)
+        ?: error("mpv did not expose a glsl-shader-opts read-back after resident PARAM publish")
+
+    val expectedValues = parseOptions(expected)
+    val actualValues = parseOptions(actual)
+    expectedValues.forEach { (key, expectedValue) ->
+      val actualValue = actualValues[key]
+        ?: error("mpv glsl-shader-opts read-back is missing $key")
+      val tolerance = max(1e-12, abs(expectedValue) * 1e-12)
+      check(abs(actualValue - expectedValue) <= tolerance) {
+        "mpv glsl-shader-opts rejected $key=$expectedValue (read back $actualValue)"
+      }
+    }
+  }
+
+  private fun verifyResidentShaderAttached() {
+    val shaderList =
+      transport.getString(GLSL_SHADERS_PROPERTY)
+        ?: transport.getString(GLSL_SHADERS_LIST_OPTION)
+        ?: error("mpv did not expose a glsl-shaders read-back after resident shader attach")
+    check(shaderList.contains(RESIDENT_SHADER_PATH)) {
+      "Resident shader was not attached by mpv: $RESIDENT_SHADER_PATH"
+    }
+  }
+
+  private fun parseOptions(options: String): Map<String, Double> =
+    options
+      .split(',')
+      .mapNotNull { token ->
+        val key = token.substringBefore('=', missingDelimiterValue = "").trim()
+        val value = token.substringAfter('=', missingDelimiterValue = "").trim().toDoubleOrNull()
+        if (key.isBlank() || value == null) null else key to value
+      }
+      .toMap()
+
   private fun removeManagedShader(path: String) {
     // mpv may report an absent list entry as an error. That is harmless here.
-    runCatching { transport.command("change-list", "glsl-shaders", "remove", path) }
+    runCatching { transport.command("change-list", GLSL_SHADERS_LIST_OPTION, "remove", path) }
   }
 
   companion object {
-    const val GLSL_SHADER_OPTS_PROPERTY = "glsl-shader-opts"
+    /** Explicit runtime option-property path; preferred over the bare option name. */
+    const val GLSL_SHADER_OPTS_PROPERTY = "options/glsl-shader-opts"
+    const val GLSL_SHADER_OPTS_BARE_PROPERTY = "glsl-shader-opts"
+    const val GLSL_SHADERS_PROPERTY = "options/glsl-shaders"
+    const val GLSL_SHADERS_LIST_OPTION = "glsl-shaders"
     const val RESIDENT_SHADER_PATH =
       "/storage/emulated/0/mpv/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl"
     const val LEGACY_RUNTIME_A_PATH =
