@@ -209,7 +209,6 @@ internal class ShaderLabResidentGpuTransport(
     val RESIDENT_CONTROL_SPECS: List<ShaderLabControlSpec> =
       ShaderLabControlCatalog.controls.filter { spec ->
         spec.kind == ShaderLabControlKind.SHADER ||
-          spec.id == ShaderLabControlId.SHADER_PROOF ||
           spec.id == ShaderLabControlId.LUMA_MASTER ||
           spec.id == ShaderLabControlId.CHROMA_MASTER
       }
