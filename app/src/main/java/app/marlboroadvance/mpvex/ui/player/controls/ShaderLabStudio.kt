@@ -1,6 +1,5 @@
 package app.marlboroadvance.mpvex.ui.player.controls
 
-import android.view.KeyEvent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -44,8 +43,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.key.nativeKeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -263,24 +265,19 @@ private fun HoldOriginalButton(
     onClick = {},
     modifier = modifier
       .onPreviewKeyEvent { event ->
-        val native = event.nativeKeyEvent
-        val isHoldKey =
-          native.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-            native.keyCode == KeyEvent.KEYCODE_ENTER ||
-            native.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
-            native.keyCode == KeyEvent.KEYCODE_SPACE
+        val isHoldKey = event.key == Key.DirectionCenter || event.key == Key.Enter
         if (!isHoldKey) {
           false
         } else {
-          when (native.action) {
-            KeyEvent.ACTION_DOWN -> {
+          when (event.type) {
+            KeyEventType.KeyDown -> {
               if (!remoteHeld) {
                 remoteHeld = true
                 commandApi.execute(ShaderLabCommand.PreviewOriginalStart)
               }
               true
             }
-            KeyEvent.ACTION_UP -> {
+            KeyEventType.KeyUp -> {
               if (remoteHeld) {
                 remoteHeld = false
                 commandApi.execute(ShaderLabCommand.PreviewOriginalEnd)
