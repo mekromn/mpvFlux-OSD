@@ -10,18 +10,17 @@ import org.junit.Test
 
 class ShaderLabResidentGpuTransportTest {
   @Test
-  fun residentCatalogContainsEveryShaderControlShaderProofAndBothMastersExactlyOnce() {
+  fun residentCatalogContainsEveryShaderControlAndBothMastersExactlyOnce() {
     val expected =
       ShaderLabControlCatalog.controls
         .filter {
           it.kind == ShaderLabControlKind.SHADER ||
-            it.id == ShaderLabControlId.SHADER_PROOF ||
             it.id == ShaderLabControlId.LUMA_MASTER ||
             it.id == ShaderLabControlId.CHROMA_MASTER
         }
         .map { it.id }
 
-    assertEquals(40, expected.size)
+    assertEquals(39, expected.size)
     assertEquals(expected, ShaderLabResidentGpuTransport.RESIDENT_CONTROL_SPECS.map { it.id })
     assertEquals(expected.toSet(), ShaderLabResidentGpuTransport.RESIDENT_CONTROL_IDS)
   }
@@ -29,7 +28,6 @@ class ShaderLabResidentGpuTransportTest {
   @Test
   fun completeOptionEncodingUsesAllParamsHighPrecisionAndIntegerSyntax() {
     val values = ShaderLabControlCatalog.defaults().toMutableMap().apply {
-      this[ShaderLabControlId.SHADER_PROOF] = 1.0
       this[ShaderLabControlId.LUMA_CONTRAST] = 0.3101234567890123
       this[ShaderLabControlId.GAMUT_ITERATIONS] = 11.0
       this[ShaderLabControlId.DEBUG_VIEW] = 3.0
@@ -39,14 +37,12 @@ class ShaderLabResidentGpuTransportTest {
     val pairs = encoded.split(',')
     val keys = pairs.map { it.substringBefore('=') }
 
-    assertEquals(40, pairs.size)
-    assertEquals(40, keys.toSet().size)
+    assertEquals(39, pairs.size)
+    assertEquals(39, keys.toSet().size)
     assertEquals(ShaderLabResidentGpuTransport.RESIDENT_CONTROL_SPECS.map { it.id.legacyKey }, keys)
-    assertTrue(encoded.contains("SHADER_PROOF=1"))
     assertTrue(encoded.contains("LUMA_CONTRAST=0.310123456789012"))
     assertTrue(encoded.contains("GAMUT_ITERATIONS=11"))
     assertTrue(encoded.contains("DEBUG_VIEW=3"))
-    assertFalse(encoded.contains("SHADER_PROOF=1.0"))
     assertFalse(encoded.contains("GAMUT_ITERATIONS=11.0"))
     assertFalse(encoded.contains("DEBUG_VIEW=3.0"))
   }
@@ -71,25 +67,6 @@ class ShaderLabResidentGpuTransportTest {
       transport.commands.single()[2],
       transport.strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY],
     )
-  }
-
-  @Test
-  fun shaderProofUsesResidentOptionsWithoutLegacyShaderSwap() {
-    val transport = FakeTransport()
-    val gpu = ShaderLabResidentGpuTransport(transport)
-    gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
-    transport.commands.clear()
-
-    val proof = ShaderLabControlCatalog.defaults().toMutableMap().apply {
-      this[ShaderLabControlId.SHADER_PROOF] = 1.0
-    }
-    gpu.publish(proof)
-
-    assertEquals(1, transport.commands.size)
-    assertEquals("set", transport.commands.single()[0])
-    assertTrue(transport.commands.single()[2].contains("SHADER_PROOF=1"))
-    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
-    assertFalse(transport.commands.any { it.any { arg -> arg.contains("runtime-a.glsl") || arg.contains("runtime-b.glsl") } })
   }
 
   @Test
