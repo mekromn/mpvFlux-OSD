@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 
@@ -24,6 +25,87 @@ def active_config_lines(text: str) -> set[str]:
         for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
+
+
+def parse_resident_param_defaults(shader: str) -> dict[str, float]:
+    lines = shader.splitlines()
+    values: dict[str, float] = {}
+    for index, raw in enumerate(lines):
+        line = raw.strip()
+        if not line.startswith("//!PARAM "):
+            continue
+        name = line.removeprefix("//!PARAM ").strip()
+        default: float | None = None
+        cursor = index + 1
+        while cursor < len(lines):
+            candidate = lines[cursor].strip()
+            if candidate.startswith("//!PARAM ") or candidate.startswith("//!HOOK "):
+                break
+            if candidate and not candidate.startswith("//!"):
+                try:
+                    default = float(candidate)
+                except ValueError:
+                    pass
+                break
+            cursor += 1
+        if default is None:
+            raise ValueError(f"PARAM {name} has no numeric default")
+        values[name] = default
+    return values
+
+
+def parse_legacy_lua_defaults(lua: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for line in lua.splitlines():
+        key_match = re.search(r'key="([A-Z0-9_-]+)"', line)
+        default_match = re.search(r'\bd=([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)', line)
+        kind_match = re.search(r'kind="([^"]+)"', line)
+        if not (key_match and default_match and kind_match):
+            continue
+        key = key_match.group(1)
+        kind = kind_match.group(1)
+        if kind == "shader" or key in {"LUMA_MASTER", "CHROMA_MASTER"}:
+            values[key] = float(default_match.group(1))
+    return values
+
+
+def parse_kotlin_catalog_defaults(source: str) -> dict[str, float]:
+    pattern = re.compile(
+        r'spec\(ShaderLabControlId\.([A-Z0-9_]+),\s*'
+        r'ShaderLabGroup\.[A-Z0-9_]+,\s*'
+        r'ShaderLabControlKind\.[A-Z0-9_]+,\s*'
+        r'"[^"]*",\s*'
+        r'([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)'
+    )
+    return {match.group(1): float(match.group(2)) for match in pattern.finditer(source)}
+
+
+def compare_defaults(
+    label: str,
+    resident: dict[str, float],
+    reference: dict[str, float],
+    failures: list[str],
+) -> None:
+    resident_keys = set(resident)
+    reference_keys = set(reference)
+    if resident_keys != reference_keys:
+        missing = sorted(resident_keys - reference_keys)
+        extra = sorted(reference_keys - resident_keys)
+        if missing:
+            failures.append(f"{label} missing resident keys: {', '.join(missing)}")
+        if extra:
+            failures.append(f"{label} has extra resident keys: {', '.join(extra)}")
+        return
+
+    for key in sorted(resident_keys):
+        expected = reference[key]
+        actual = resident[key]
+        tolerance = max(1e-12, abs(expected) * 1e-12)
+        if abs(actual - expected) > tolerance:
+            failures.append(
+                f"resident PARAM default mismatch vs {label}: "
+                f"{key}: shader={actual}, reference={expected}"
+            )
 
 
 def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str]) -> None:
@@ -90,9 +172,29 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
         if snippet in source:
             failures.append(f"MPVView contains conflicting generic renderer path: {snippet}")
 
-    resident = root / "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl"
-    if resident.is_file():
-        shader = resident.read_text(encoding="utf-8")
+    subtitle_preferences = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/preferences/SubtitlesPreferences.kt"
+    )
+    track_selector = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/ui/player/TrackSelector.kt"
+    )
+    subtitle_source = subtitle_preferences.read_text(encoding="utf-8")
+    track_source = track_selector.read_text(encoding="utf-8")
+    if 'getBoolean("sub_autoload_enabled", false)' not in subtitle_source:
+        failures.append("smart subtitle autoload must default OFF")
+    if 'if (!subtitlesPreferences.autoloadMatchingSubtitles.get())' not in track_source:
+        failures.append("TrackSelector must honor the subtitle autoload preference")
+    if 'MPVLib.setPropertyString("sid", "no")' not in track_source:
+        failures.append("TrackSelector must be able to enforce subtitles OFF on fresh playback")
+
+    resident_path = root / "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl"
+    lua_path = root / "scripts/pixel9-shader-lab.lua"
+    catalog_path = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/catalog/"
+        "ShaderLabControlCatalog.kt"
+    )
+    if resident_path.is_file():
+        shader = resident_path.read_text(encoding="utf-8")
         count = shader.count("//!PARAM ")
         if count != 39:
             failures.append(f"resident shader PARAM count must be 39, got {count}")
@@ -100,6 +202,20 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
             failures.append("resident shader must remain a LINEAR/HOOKED pass")
         if "@@" in shader:
             failures.append("resident shader contains unresolved template token")
+
+        try:
+            resident_defaults = parse_resident_param_defaults(shader)
+            lua_defaults = parse_legacy_lua_defaults(lua_path.read_text(encoding="utf-8"))
+            catalog_defaults = parse_kotlin_catalog_defaults(catalog_path.read_text(encoding="utf-8"))
+            resident_catalog_defaults = {
+                key: catalog_defaults[key]
+                for key in resident_defaults
+                if key in catalog_defaults
+            }
+            compare_defaults("legacy Lua catalog", resident_defaults, lua_defaults, failures)
+            compare_defaults("typed Kotlin catalog", resident_defaults, resident_catalog_defaults, failures)
+        except (OSError, ValueError) as error:
+            failures.append(f"resident PARAM default audit failed: {error}")
 
 
 def main() -> int:
