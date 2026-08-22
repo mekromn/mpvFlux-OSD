@@ -188,6 +188,12 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
     studio_path = repo / (
         "app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/ShaderLabStudio.kt"
     )
+    studio_ui_path = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/ShaderLabUiController.kt"
+    )
+    player_button_path = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/PlayerButtonCompatibility.kt"
+    )
     host_path = repo / (
         "app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/ShaderLabR08OverlayView.kt"
     )
@@ -249,17 +255,43 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
     if studio_path.is_file():
         studio = studio_path.read_text(encoding="utf-8")
         for required in (
-            "FrameCoalescedShaderDispatcher",
-            "withFrameNanos",
+            "commandApi.execute(ShaderLabCommand.SetValue(spec.id, value))",
             "ShaderLabControlId.LUMA_MASTER",
             "ShaderLabControlId.CHROMA_MASTER",
             "ShaderCurveEditor",
-            'Text(if (open) "LAB  ×" else "LAB")',
+            "uiController.visible.collectAsState()",
+            "Key.DirectionCenter",
+            "KeyEventType.KeyDown",
+            "KeyEventType.KeyUp",
         ):
             if required not in studio:
                 failures.append(f"Shader Lab Studio lost native UI invariant: {required}")
+        for forbidden in (
+            "FrameCoalescedShaderDispatcher",
+            "withFrameNanos",
+            'Text(if (open) "LAB  ×" else "LAB")',
+        ):
+            if forbidden in studio:
+                failures.append(f"Shader Lab Studio contains obsolete non-native path: {forbidden}")
     else:
         failures.append("ShaderLabStudio.kt missing")
+
+    if studio_ui_path.is_file():
+        studio_ui = studio_ui_path.read_text(encoding="utf-8")
+        for required in ("MutableStateFlow(false)", "fun toggle()", "fun close()"):
+            if required not in studio_ui:
+                failures.append(f"Shader Lab UI controller lost visibility invariant: {required}")
+    else:
+        failures.append("ShaderLabUiController.kt missing")
+
+    if player_button_path.is_file():
+        player_button = player_button_path.read_text(encoding="utf-8")
+        if "shaderLabUi.toggle()" not in player_button:
+            failures.append("player SHADER_LAB button must toggle the native Studio")
+        if "bridge.toggleLegacyOverlay()" in player_button:
+            failures.append("player SHADER_LAB button must not toggle the legacy Lua overlay")
+    else:
+        failures.append("PlayerButtonCompatibility.kt missing")
 
     if host_path.is_file():
         host = host_path.read_text(encoding="utf-8")
