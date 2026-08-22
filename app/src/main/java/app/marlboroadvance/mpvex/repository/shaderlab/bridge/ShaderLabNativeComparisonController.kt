@@ -55,7 +55,9 @@ internal class ShaderLabNativeComparisonController(
 
   fun seedTunedValues(values: Map<ShaderLabControlId, Double>) {
     PICTURE_PROPERTY_SPECS.forEach { spec ->
-      values[spec.id]?.takeIf(Double::isFinite)?.let { tunedProperties[spec.id] = spec.clamp(it) }
+      values[spec.id]
+        ?.takeIf { it.isFinite() }
+        ?.let { tunedProperties[spec.id] = spec.clamp(it) }
     }
   }
 
@@ -117,17 +119,20 @@ internal class ShaderLabNativeComparisonController(
     }
 
     if (willBeOriginal) {
-      // Kill the resident expansion first, then restore picture properties.
-      // Both operations are in-place and the shader hook remains resident.
+      // Mark ORIGINAL authoritative before direct property writes. libmpv may
+      // synchronously deliver property observers from command("set", ...), and
+      // those callbacks must not overwrite the saved tuned bank with originals.
+      state = next
       residentGpu.setOriginalView(true, sourceKind)
       applyProperties(originalProperties)
-    } else {
-      // Restore direct tuning while the shader is still bypassed, then expose
-      // the already-resident tuned shader. There is no detach/re-attach window.
-      applyProperties(tunedProperties)
-      residentGpu.setOriginalView(false, sourceKind)
+      return state
     }
 
+    // Keep ORIGINAL authoritative while restoring tuned direct properties, so
+    // any synchronous observer callbacks are ignored. Only after all tuned
+    // properties are back do we expose the already-resident shader again.
+    applyProperties(tunedProperties)
+    residentGpu.setOriginalView(false, sourceKind)
     state = next
     return state
   }
