@@ -210,9 +210,15 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
     )
     if resident_path.is_file():
         shader = resident_path.read_text(encoding="utf-8")
-        count = shader.count("//!PARAM ")
+        try:
+            resident_defaults = parse_resident_param_defaults(shader)
+        except ValueError as error:
+            failures.append(f"resident PARAM declaration audit failed: {error}")
+            resident_defaults = {}
+
+        count = len(resident_defaults)
         if count != 40:
-            failures.append(f"resident shader PARAM count must be 40, got {count}")
+            failures.append(f"resident shader PARAM declaration count must be 40, got {count}")
         if "//!PARAM SHADER_PROOF" not in shader:
             failures.append("resident shader must expose SHADER_PROOF as a PARAM")
         if "if (SHADER_PROOF != 0)" not in shader or "return vec4(1.0, 0.0, 1.0, src.a);" not in shader:
@@ -223,7 +229,6 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
             failures.append("resident shader contains unresolved template token")
 
         try:
-            resident_defaults = parse_resident_param_defaults(shader)
             lua_defaults = parse_legacy_lua_defaults(lua_path.read_text(encoding="utf-8"))
             catalog_defaults = parse_kotlin_catalog_defaults(catalog_path.read_text(encoding="utf-8"))
             resident_catalog_defaults = {
@@ -233,7 +238,7 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
             }
             compare_defaults("legacy Lua catalog", resident_defaults, lua_defaults, failures)
             compare_defaults("typed Kotlin catalog", resident_defaults, resident_catalog_defaults, failures)
-        except (OSError, ValueError) as error:
+        except OSError as error:
             failures.append(f"resident PARAM default audit failed: {error}")
 
 
