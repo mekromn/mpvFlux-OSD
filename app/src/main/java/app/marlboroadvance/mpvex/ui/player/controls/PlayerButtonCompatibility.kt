@@ -7,7 +7,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.marlboroadvance.mpvex.preferences.PlayerButton
-import app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge
 import app.marlboroadvance.mpvex.ui.player.PlayerActivity
 import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.player.Sheets
@@ -41,7 +40,7 @@ fun RenderConfigurablePlayerButton(
   modifier: Modifier = Modifier,
   buttonSize: Dp = 48.dp,
 ) {
-  val bridge = koinInject<MpvShaderLabBridge>()
+  val shaderLabUi = koinInject<ShaderLabUiController>()
   val clickEvent = LocalPlayerButtonsClickEvent.current
 
   when (button) {
@@ -62,7 +61,7 @@ fun RenderConfigurablePlayerButton(
         icon = button.icon,
         onClick = {
           clickEvent()
-          bridge.toggleLegacyOverlay()
+          shaderLabUi.toggle()
         },
         color = controlColor,
         modifier = modifier.size(buttonSize),
