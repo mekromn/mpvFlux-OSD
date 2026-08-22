@@ -1,10 +1,10 @@
 package app.marlboroadvance.mpvex.repository.shaderlab.bridge
 
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabControlId
+import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabPresetId
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommand
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommandApi
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommandResult
-import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabPresetId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -168,7 +168,8 @@ class MpvShaderLabBridgeTest {
     assertEquals("set", optsCommand[0])
     assertTrue(optsCommand[2].contains("LUMA_CONTRAST=0.31000000000000000"))
     assertTrue(optsCommand[2].contains("GAMUT_ITERATIONS=9"))
-    assertEquals(39, optsCommand[2].split(',').size)
+    assertTrue(optsCommand[2].contains("R08_BYPASS=0"))
+    assertEquals(40, optsCommand[2].split(',').size)
     assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-set" })
     assertEquals(0.31, bridge.state.value.values.getValue(ShaderLabControlId.LUMA_CONTRAST), 0.0)
@@ -192,7 +193,7 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
-  fun bypassAndPreviewLuaStateAlsoControlsResidentShaderVisibility() {
+  fun bypassAndPreviewLuaStateSwitchPrivateResidentUniformWithoutShaderListChurn() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
@@ -206,26 +207,24 @@ class MpvShaderLabBridgeTest {
       MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
       "__ready=1\n__serial=2\n__sdr=1\n__source_gamma=bt.1886\n__bypassed=1\n__preview=0\n__swaps=0\n__apply_busy=0",
     )
-    assertTrue(
-      transport.commands.contains(
-        listOf("change-list", "glsl-shaders", "remove", ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
-      ),
-    )
+    val bypassOn = transport.commands.last { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
+    assertTrue(bypassOn[2].contains("R08_BYPASS=1"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+    assertTrue(transport.shaderList().contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH))
 
     transport.commands.clear()
     transport.emitText(
       MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
       "__ready=1\n__serial=3\n__sdr=1\n__source_gamma=bt.1886\n__bypassed=0\n__preview=0\n__swaps=0\n__apply_busy=0",
     )
-    assertTrue(
-      transport.commands.contains(
-        listOf("change-list", "glsl-shaders", "append", ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
-      ),
-    )
+    val bypassOff = transport.commands.single { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
+    assertTrue(bypassOff[2].contains("R08_BYPASS=0"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+    assertTrue(transport.shaderList().contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH))
   }
 
   @Test
-  fun legacyPresetBoundaryAdoptsValuesThenRestoresSingleResidentShader() {
+  fun legacyPresetBoundaryAdoptsValuesThroughSameResidentUniformPath() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
@@ -241,13 +240,14 @@ class MpvShaderLabBridgeTest {
     )
 
     assertEquals(0.456, bridge.state.value.values.getValue(ShaderLabControlId.LUMA_CONTRAST), 0.0)
-    assertTrue(transport.commands.any { it.getOrNull(2) == "append" && it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH })
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     assertTrue(
       transport.commands.any {
         it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY &&
           it.getOrNull(2)?.contains("LUMA_CONTRAST=0.45600000000000000") == true
       },
     )
+    assertTrue(transport.shaderList().contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH))
   }
 
   @Test
@@ -353,7 +353,32 @@ class MpvShaderLabBridgeTest {
     override fun command(vararg args: String) {
       if (failCommands) error("synthetic transport failure")
       commands += args.toList()
+      when {
+        args.getOrNull(0) == "set" && args.size >= 3 -> {
+          strings[args[1]] = args[2]
+          if (args[1] == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) {
+            strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY] = args[2]
+          }
+        }
+        args.getOrNull(0) == "change-list" &&
+          args.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION &&
+          args.size >= 4 -> {
+          val current = shaderList().split(':').filter { it.isNotBlank() }.toMutableList()
+          when (args[2]) {
+            "append" -> if (args[3] !in current) current += args[3]
+            "remove" -> current.removeAll { it == args[3] }
+          }
+          val joined = current.joinToString(":")
+          strings[ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY] = joined
+          strings[ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION] = joined
+        }
+      }
     }
+
+    fun shaderList(): String =
+      strings[ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY]
+        ?: strings[ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION]
+        ?: ""
 
     fun emitText(property: String, value: String) {
       strings[property] = value
