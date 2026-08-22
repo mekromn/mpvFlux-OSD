@@ -39,19 +39,19 @@ class ShaderLabNativeComparisonControllerTest {
     compare.captureVideoStart(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
 
     compare.setTunedValue(ShaderLabControlId.MPV_BRIGHTNESS, 20.0)
-    assertEquals(20.0, mpv.doubles.getValue("brightness"))
+    assertEquals(20.0, mpv.doubles.getValue("brightness"), 0.0)
 
     compare.toggleBypass(ShaderLabSourceKind.SDR)
-    assertEquals(0.0, mpv.doubles.getValue("brightness"))
+    assertEquals(0.0, mpv.doubles.getValue("brightness"), 0.0)
 
     compare.setTunedValue(ShaderLabControlId.MPV_BRIGHTNESS, 35.0)
     compare.adoptObservedTunedValue(ShaderLabControlId.MPV_BRIGHTNESS, 0.0)
     val overlaid = compare.overlayTunedValues(ShaderLabControlCatalog.defaults())
-    assertEquals(35.0, overlaid.getValue(ShaderLabControlId.MPV_BRIGHTNESS))
-    assertEquals(0.0, mpv.doubles.getValue("brightness"))
+    assertEquals(35.0, overlaid.getValue(ShaderLabControlId.MPV_BRIGHTNESS), 0.0)
+    assertEquals(0.0, mpv.doubles.getValue("brightness"), 0.0)
 
     compare.toggleBypass(ShaderLabSourceKind.SDR)
-    assertEquals(35.0, mpv.doubles.getValue("brightness"))
+    assertEquals(35.0, mpv.doubles.getValue("brightness"), 0.0)
   }
 
   @Test
