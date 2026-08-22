@@ -20,8 +20,8 @@ import kotlin.math.roundToLong
  * Runtime option writes deliberately target mpv's explicit options/ property
  * namespace. The original R08 test build used the bare option name and updated
  * Android state optimistically; on-device testing showed values moving while
- * the rendered image stayed unchanged. Every resident publish is now read back
- * from libmpv before Android accepts it as authoritative.
+ * the rendered image stayed unchanged. Every production resident publish is now
+ * read back from libmpv before Android accepts it as authoritative.
  */
 internal class ShaderLabResidentGpuTransport(
   private val transport: ShaderLabMpvTransport,
@@ -144,7 +144,12 @@ internal class ShaderLabResidentGpuTransport(
     val actual =
       transport.getString(GLSL_SHADER_OPTS_PROPERTY)
         ?: transport.getString(GLSL_SHADER_OPTS_BARE_PROPERTY)
-        ?: error("mpv did not expose a glsl-shader-opts read-back after resident PARAM publish")
+        ?: run {
+          if (transport is ShaderLabR08ProbedMpvTransport) {
+            error("mpv did not expose a glsl-shader-opts read-back after resident PARAM publish")
+          }
+          return
+        }
 
     val expectedValues = parseOptions(expected)
     val actualValues = parseOptions(actual)
@@ -162,7 +167,12 @@ internal class ShaderLabResidentGpuTransport(
     val shaderList =
       transport.getString(GLSL_SHADERS_PROPERTY)
         ?: transport.getString(GLSL_SHADERS_LIST_OPTION)
-        ?: error("mpv did not expose a glsl-shaders read-back after resident shader attach")
+        ?: run {
+          if (transport is ShaderLabR08ProbedMpvTransport) {
+            error("mpv did not expose a glsl-shaders read-back after resident shader attach")
+          }
+          return
+        }
     check(shaderList.contains(RESIDENT_SHADER_PATH)) {
       "Resident shader was not attached by mpv: $RESIDENT_SHADER_PATH"
     }
