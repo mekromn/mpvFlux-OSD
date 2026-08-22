@@ -48,10 +48,10 @@ class ShaderLabResidentGpuTransportTest {
   }
 
   @Test
-  fun normalPublishChangesOnlyShaderOptsAndNeverTouchesShaderList() {
+  fun activeSdrPublishSetsOptionsThenRefreshesSameResidentHook() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
-    gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.NOT_READY)
+    gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
     transport.commands.clear()
 
     val changed = ShaderLabControlCatalog.defaults().toMutableMap().apply {
@@ -59,13 +59,56 @@ class ShaderLabResidentGpuTransportTest {
     }
     gpu.publish(changed)
 
-    assertEquals(1, transport.commands.size)
-    assertEquals("set", transport.commands.single()[0])
-    assertEquals(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY, transport.commands.single()[1])
-    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
-    assertEquals(
-      transport.commands.single()[2],
-      transport.strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY],
+    assertTrue(
+      transport.commands.any {
+        it.getOrNull(0) == "set" &&
+          it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY
+      },
+    )
+    assertTrue(
+      transport.commands.any {
+        it == listOf(
+          "change-list",
+          ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION,
+          "remove",
+          ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH,
+        )
+      },
+    )
+    assertTrue(
+      transport.commands.any {
+        it == listOf(
+          "change-list",
+          ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION,
+          "append",
+          ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH,
+        )
+      },
+    )
+    assertTrue(
+      transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY)
+        .contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
+    )
+  }
+
+  @Test
+  fun originalViewPublishUpdatesStoredOptionsWithoutReattachingShader() {
+    val transport = FakeTransport()
+    val gpu = ShaderLabResidentGpuTransport(transport)
+    gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
+    gpu.setOriginalView(true, ShaderLabSourceKind.SDR)
+    transport.commands.clear()
+
+    val changed = ShaderLabControlCatalog.defaults().toMutableMap().apply {
+      this[ShaderLabControlId.CHROMA_MASTER] = 0.0
+    }
+    gpu.publish(changed)
+
+    assertTrue(transport.commands.any { it.firstOrNull() == "set" })
+    assertFalse(transport.commands.any { it.getOrNull(2) == "append" })
+    assertFalse(
+      transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY)
+        .contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
     )
   }
 
