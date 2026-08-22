@@ -10,6 +10,10 @@ from pathlib import Path
 import re
 import sys
 
+INTERNAL_RESIDENT_DEFAULTS = {"R08_BYPASS": 0.0}
+PUBLIC_RESIDENT_PARAM_COUNT = 39
+TOTAL_RESIDENT_PARAM_COUNT = PUBLIC_RESIDENT_PARAM_COUNT + len(INTERNAL_RESIDENT_DEFAULTS)
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -109,12 +113,7 @@ def compare_defaults(
 
 
 def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str]) -> None:
-    """Guard the Pixel-specific defaults that must survive refactors.
-
-    R08 intentionally has one owner for each layer:
-      * mpv.conf owns renderer/default/profile policy;
-      * Android owns controller loading and resident shader attachment/PARAM I/O.
-    """
+    """Guard the Pixel-specific defaults that must survive refactors."""
 
     if manifest.get("controlCatalogVersion") != "legacy-v6.1.1-typed-1":
         failures.append(
@@ -128,9 +127,6 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
         for required in manifest.get("requiredMpvOptions", []):
             if required not in lines:
                 failures.append(f"mpv.conf missing required active line: {required}")
-
-        # R08 Android owns these entrypoints. Loading them from mpv.conf as well
-        # risks duplicate Lua instances or competing resident shader attachment.
         for forbidden_prefix in ("script=", "glsl-shaders="):
             offenders = sorted(line for line in lines if line.startswith(forbidden_prefix))
             if offenders:
@@ -162,8 +158,6 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
         if snippet not in source:
             failures.append(f"MPVView lost Pixel Shader Lab invariant: {snippet}")
 
-    # Generic app preference paths must not be able to supersede this branch's
-    # empirically verified vo=gpu/Vulkan path during initialization.
     forbidden_android_snippets = (
         'setVo(if (decoderPreferences.gpuNext.get()) "gpu-next" else "gpu")',
         '"mediacodec,mediacodec-copy,no"',
@@ -172,12 +166,8 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
         if snippet in source:
             failures.append(f"MPVView contains conflicting generic renderer path: {snippet}")
 
-    subtitle_preferences = repo / (
-        "app/src/main/java/app/marlboroadvance/mpvex/preferences/SubtitlesPreferences.kt"
-    )
-    track_selector = repo / (
-        "app/src/main/java/app/marlboroadvance/mpvex/ui/player/TrackSelector.kt"
-    )
+    subtitle_preferences = repo / "app/src/main/java/app/marlboroadvance/mpvex/preferences/SubtitlesPreferences.kt"
+    track_selector = repo / "app/src/main/java/app/marlboroadvance/mpvex/ui/player/TrackSelector.kt"
     subtitle_source = subtitle_preferences.read_text(encoding="utf-8")
     track_source = track_selector.read_text(encoding="utf-8")
     if 'getBoolean("sub_autoload_enabled", false)' not in subtitle_source:
@@ -190,32 +180,91 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
     resident_path = root / "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl"
     lua_path = root / "scripts/pixel9-shader-lab.lua"
     catalog_path = repo / (
-        "app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/catalog/"
-        "ShaderLabControlCatalog.kt"
+        "app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/catalog/ShaderLabControlCatalog.kt"
     )
+    transport_path = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/ShaderLabResidentGpuTransport.kt"
+    )
+    studio_path = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/ShaderLabStudio.kt"
+    )
+    host_path = repo / (
+        "app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/ShaderLabR08OverlayView.kt"
+    )
+
     if resident_path.is_file():
         shader = resident_path.read_text(encoding="utf-8")
-        count = shader.count("//!PARAM ")
-        if count != 39:
-            failures.append(f"resident shader PARAM count must be 39, got {count}")
+        try:
+            resident_defaults = parse_resident_param_defaults(shader)
+        except ValueError as error:
+            failures.append(f"resident PARAM default audit failed: {error}")
+            resident_defaults = {}
+
+        if len(resident_defaults) != TOTAL_RESIDENT_PARAM_COUNT:
+            failures.append(
+                f"resident shader PARAM count must be {TOTAL_RESIDENT_PARAM_COUNT} "
+                f"({PUBLIC_RESIDENT_PARAM_COUNT} public + {len(INTERNAL_RESIDENT_DEFAULTS)} internal), "
+                f"got {len(resident_defaults)}"
+            )
+        for key, expected in INTERNAL_RESIDENT_DEFAULTS.items():
+            if resident_defaults.get(key) != expected:
+                failures.append(f"internal resident PARAM {key} must default to {expected}")
+        if "if (R08_BYPASS != 0)" not in shader or "return src;" not in shader:
+            failures.append("resident shader must implement no-flash R08_BYPASS early return")
         if "//!HOOK LINEAR" not in shader or "//!BIND HOOKED" not in shader:
             failures.append("resident shader must remain a LINEAR/HOOKED pass")
         if "@@" in shader:
             failures.append("resident shader contains unresolved template token")
 
-        try:
-            resident_defaults = parse_resident_param_defaults(shader)
-            lua_defaults = parse_legacy_lua_defaults(lua_path.read_text(encoding="utf-8"))
-            catalog_defaults = parse_kotlin_catalog_defaults(catalog_path.read_text(encoding="utf-8"))
-            resident_catalog_defaults = {
-                key: catalog_defaults[key]
-                for key in resident_defaults
-                if key in catalog_defaults
+        if resident_defaults:
+            public_defaults = {
+                key: value for key, value in resident_defaults.items()
+                if key not in INTERNAL_RESIDENT_DEFAULTS
             }
-            compare_defaults("legacy Lua catalog", resident_defaults, lua_defaults, failures)
-            compare_defaults("typed Kotlin catalog", resident_defaults, resident_catalog_defaults, failures)
-        except (OSError, ValueError) as error:
-            failures.append(f"resident PARAM default audit failed: {error}")
+            try:
+                lua_defaults = parse_legacy_lua_defaults(lua_path.read_text(encoding="utf-8"))
+                catalog_defaults = parse_kotlin_catalog_defaults(catalog_path.read_text(encoding="utf-8"))
+                resident_catalog_defaults = {
+                    key: catalog_defaults[key]
+                    for key in public_defaults
+                    if key in catalog_defaults
+                }
+                compare_defaults("legacy Lua catalog", public_defaults, lua_defaults, failures)
+                compare_defaults("typed Kotlin catalog", public_defaults, resident_catalog_defaults, failures)
+            except OSError as error:
+                failures.append(f"resident PARAM reference audit failed: {error}")
+
+    if transport_path.is_file():
+        transport = transport_path.read_text(encoding="utf-8")
+        for required in (
+            'const val INTERNAL_BYPASS_PARAM = "R08_BYPASS"',
+            'setAndVerifyOptions(optionsForView(nextOptions))',
+            'if (residentShaderIsAttached()) return',
+        ):
+            if required not in transport:
+                failures.append(f"resident transport lost live-uniform invariant: {required}")
+        if "refreshActiveResidentHookIfNeeded" in transport:
+            failures.append("ordinary resident PARAM publishing must not detach/re-append the shader hook")
+
+    if studio_path.is_file():
+        studio = studio_path.read_text(encoding="utf-8")
+        for required in (
+            "FrameCoalescedShaderDispatcher",
+            "withFrameNanos",
+            "ShaderLabControlId.LUMA_MASTER",
+            "ShaderLabControlId.CHROMA_MASTER",
+            "ShaderCurveEditor",
+            'Text(if (open) "LAB  ×" else "LAB")',
+        ):
+            if required not in studio:
+                failures.append(f"Shader Lab Studio lost native UI invariant: {required}")
+    else:
+        failures.append("ShaderLabStudio.kt missing")
+
+    if host_path.is_file():
+        host = host_path.read_text(encoding="utf-8")
+        if "AbstractComposeView" not in host or "ShaderLabStudioOverlay()" not in host:
+            failures.append("Shader Lab host must use Compose Studio instead of the old imperative harness")
 
 
 def main() -> int:
