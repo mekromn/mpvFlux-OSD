@@ -1,0 +1,70 @@
+name: R08 One-Shot Historical Meson Pin
+
+on:
+  push:
+    branches:
+      - agent/upstream-refactor
+    paths:
+      - .github/workflows/r08-one-shot-meson-pin.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pin historical Meson and improve ELF diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          replacements = 0
+          for p in sorted(Path('.github/workflows').glob('*.yml')):
+              if not (p.name.startswith('r08-') or p.name == 'refactor-dev.yml'):
+                  continue
+              s = p.read_text()
+              n = s.count("'meson>=1.6.1'")
+              if n:
+                  s = s.replace("'meson>=1.6.1'", "'meson==1.10.1'")
+                  p.write_text(s)
+                  replacements += n
+          assert replacements >= 2, replacements
+          print(f'pinned Meson in {replacements} workflow occurrence(s)')
+
+          p = Path('tools/r08_renderer_parity_rebuild.sh')
+          s = p.read_text()
+          old = '''    file "$so" | grep -F 'for Android 24'
+              file "$so" | grep -F 'built by NDK r29 (14206865)'
+          '''.replace('              file', '    file')
+          assert s.count(old) == 1, s.count(old)
+          new = '''    file_info="$(file "$so")"
+              printf '%s\\n' "$file_info"
+              grep -F 'for Android 24' <<<"$file_info"
+              grep -F 'built by NDK r29 (14206865)' <<<"$file_info"
+          '''.replace('              printf', '    printf').replace('              grep', '    grep')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git diff --check
+          grep -R -F "meson==1.10.1" .github/workflows/r08-*.yml .github/workflows/refactor-dev.yml
+          grep -F 'file_info="$(file "$so")"' tools/r08_renderer_parity_rebuild.sh
+
+      - name: Commit repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows tools/r08_renderer_parity_rebuild.sh
+          git diff --cached --check
+          git commit -m 'R08 pin historical Meson native toolchain'
+          git push origin HEAD:agent/upstream-refactor
