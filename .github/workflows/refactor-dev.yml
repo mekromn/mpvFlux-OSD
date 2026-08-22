@@ -280,8 +280,10 @@ jobs:
           from pathlib import Path
           shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
           assert '@@' not in shader, 'resident shader contains unresolved template token'
-          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
-          print('Resident shader PARAM audit PASS: 39')
+          declarations = [line for line in shader.splitlines() if line.startswith('//!PARAM ')]
+          assert len(declarations) == 40, len(declarations)
+          assert declarations[0] == '//!PARAM R08_BYPASS', declarations[0]
+          print('Resident shader PARAM audit PASS: 39 public + 1 internal bypass')
           PY
 
       - name: Rebuild exact R07 Vulkan renderer plus R08 PARAM support
