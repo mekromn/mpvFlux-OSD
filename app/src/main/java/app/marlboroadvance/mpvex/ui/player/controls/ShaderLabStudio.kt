@@ -1,5 +1,6 @@
 package app.marlboroadvance.mpvex.ui.player.controls
 
+import android.view.KeyEvent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -20,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,6 +47,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.nativeKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -76,6 +78,9 @@ import kotlin.math.roundToInt
  * sliders emit continuously during pointer movement and are coalesced to at
  * most one backend update per display frame. The native mpv R08 patch then
  * updates the already-resident vo=gpu uniforms in-place.
+ *
+ * Visibility is owned by [ShaderLabUiController] because the player controls
+ * and this XML-hosted overlay are separate Compose trees.
  */
 @Composable
 fun ShaderLabStudioOverlay(
@@ -83,25 +88,19 @@ fun ShaderLabStudioOverlay(
 ) {
   val bridge = koinInject<MpvShaderLabBridge>()
   val commandApi = koinInject<ShaderLabCommandApi>()
+  val uiController = koinInject<ShaderLabUiController>()
   val backend by bridge.state.collectAsState()
-  var open by remember { mutableStateOf(false) }
+  val visible by uiController.visible.collectAsState()
 
-  Column(
+  AnimatedVisibility(
+    visible = visible,
     modifier = modifier.width(430.dp),
-    horizontalAlignment = Alignment.End,
-    verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    Button(onClick = { open = !open }) {
-      Text(if (open) "LAB  ×" else "LAB")
-    }
-
-    AnimatedVisibility(visible = open) {
-      ShaderLabStudioPanel(
-        backend = backend,
-        commandApi = commandApi,
-        onClose = { open = false },
-      )
-    }
+    ShaderLabStudioPanel(
+      backend = backend,
+      commandApi = commandApi,
+      onClose = uiController::close,
+    )
   }
 }
 
@@ -263,17 +262,49 @@ private fun HoldOriginalButton(
   active: Boolean,
   modifier: Modifier = Modifier,
 ) {
+  var remoteHeld by remember { mutableStateOf(false) }
+
   OutlinedButton(
     onClick = {},
-    modifier = modifier.pointerInput(commandApi) {
-      awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        down.consume()
-        commandApi.execute(ShaderLabCommand.PreviewOriginalStart)
-        waitForUpOrCancellation()
-        commandApi.execute(ShaderLabCommand.PreviewOriginalEnd)
+    modifier = modifier
+      .onPreviewKeyEvent { event ->
+        val native = event.nativeKeyEvent
+        val isHoldKey =
+          native.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            native.keyCode == KeyEvent.KEYCODE_ENTER ||
+            native.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            native.keyCode == KeyEvent.KEYCODE_SPACE
+        if (!isHoldKey) {
+          false
+        } else {
+          when (native.action) {
+            KeyEvent.ACTION_DOWN -> {
+              if (!remoteHeld) {
+                remoteHeld = true
+                commandApi.execute(ShaderLabCommand.PreviewOriginalStart)
+              }
+              true
+            }
+            KeyEvent.ACTION_UP -> {
+              if (remoteHeld) {
+                remoteHeld = false
+                commandApi.execute(ShaderLabCommand.PreviewOriginalEnd)
+              }
+              true
+            }
+            else -> false
+          }
+        }
       }
-    },
+      .pointerInput(commandApi) {
+        awaitEachGesture {
+          val down = awaitFirstDown(requireUnconsumed = false)
+          down.consume()
+          commandApi.execute(ShaderLabCommand.PreviewOriginalStart)
+          waitForUpOrCancellation()
+          commandApi.execute(ShaderLabCommand.PreviewOriginalEnd)
+        }
+      },
   ) {
     Text(if (active) "ORIGINAL" else "HOLD ORIGINAL")
   }
@@ -362,6 +393,7 @@ private fun ShaderCurveEditor(
         .pointerInput(group, editable) {
           if (!editable) return@pointerInput
           var active: ShaderLabControlId? = null
+          var dragValue: Double? = null
           detectDragGestures(
             onDragStart = { pos ->
               active = if (isLuma) {
@@ -377,19 +409,30 @@ private fun ShaderCurveEditor(
                   else -> ShaderLabControlId.BRIGHT_CHROMA
                 }
               }
+              active?.let { id ->
+                val spec = ShaderLabControlCatalog.spec(id)
+                dragValue = values[id] ?: spec.defaultValue
+              }
             },
-            onDragEnd = { active = null },
-            onDragCancel = { active = null },
+            onDragEnd = {
+              active = null
+              dragValue = null
+            },
+            onDragCancel = {
+              active = null
+              dragValue = null
+            },
           ) { change, dragAmount ->
             change.consume()
             val id = active ?: return@detectDragGestures
             val spec = ShaderLabControlCatalog.spec(id)
-            val current = values[id] ?: spec.defaultValue
+            val current = dragValue ?: values[id] ?: spec.defaultValue
             val next = if (id == ShaderLabControlId.LUMA_PIVOT) {
               spec.clamp(change.position.x / size.width * (spec.maxValue - spec.minValue) + spec.minValue)
             } else {
               spec.clamp(current - dragAmount.y / size.height * (spec.maxValue - spec.minValue) * 0.55)
             }
+            dragValue = next
             onValueChange(id, next)
           }
         },
