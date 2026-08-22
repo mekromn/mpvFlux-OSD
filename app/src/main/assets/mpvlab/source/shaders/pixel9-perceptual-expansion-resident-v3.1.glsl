@@ -1,3 +1,10 @@
+//!PARAM SHADER_PROOF
+//!DESC Resident parameter proof
+//!TYPE int
+//!MINIMUM 0
+//!MAXIMUM 1
+0
+
 //!PARAM LUMA_MASTER
 //!DESC Luma master
 //!TYPE float
@@ -279,9 +286,10 @@
     Pixel 9 Pro XL - Perceptual SDR Expansion v3.1
     R08 resident-parameter edition.
 
-    The render math is intentionally the V3.1 workstation math. The only
-    architectural change is that Shader Lab values are vo=gpu //!PARAM
-    uniforms instead of regenerated compile-time literals.
+    The image math remains the V3.1 workstation math. Shader Lab values are
+    vo=gpu //!PARAM uniforms instead of regenerated compile-time literals.
+    SHADER_PROOF is R08-only diagnostic plumbing: nonzero forces magenta so
+    glsl-shader-opts propagation can be proven without rewriting a GLSL file.
 */
 
 const vec3 LUMA709 = vec3(0.2126, 0.7152, 0.0722);
@@ -455,6 +463,9 @@ float find_gamut_chroma_scale(vec3 lab, float requestedScale)
 vec4 hook()
 {
     vec4 src = HOOKED_tex(HOOKED_pos);
+
+    if (SHADER_PROOF != 0)
+        return vec4(1.0, 0.0, 1.0, src.a);
 
     vec3 rgb = max(src.rgb, vec3(0.0));
 
