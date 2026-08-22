@@ -135,3 +135,12 @@ A possible ordering concern was identified because the synthetic Android `vulkan
 4. Record the resulting run/job/artifact IDs and hashes here and in the R08 progress documentation.
 5. Only after automated parity proof passes, install/test the parity APK on the real Pixel 9 Pro XL / Android 16 and compare the expanded-brightness/high-fidelity `vo=gpu` output to accepted R07.
 6. Do not apply mined upstream renderer improvements until that real-device parity checkpoint passes.
+
+## 2026-08-22 clean-head continuation
+
+- Native verifier repair commit: `66f56e973f3d2673778e9d1f48d925afdb262762`.
+- Packaged-APK parity hardening + progress/forensics checkpoint commit: `7ac001946d787739f3247154cc33081daed99b6f`.
+- A temporary standalone ELF-note helper was added at `f579b966ea82d81dc9fd6fdae898e3cd07fa399d` while reconciling concurrent branch state, then removed because the authoritative native and APK gates already contain the validated direct `.note.android.ident` parser. Cleanup commit: `e3f2069c21c7754d31d67c53d342e62ab654d6bf`.
+- The cleanup changes no renderer, dependency, PARAM, Vulkan, FFmpeg, or libplacebo input. It only removes unused verification code.
+- Clean-head parity trigger after cleanup: `R08 Renderer Parity Proof` run #32 / run ID `32559305803`, initially queued from `e3f2069c21c7754d31d67c53d342e62ab654d6bf`.
+- The next authoritative result is the parity run from the latest documentation-inclusive head. If it fails, the first new exact gate failure becomes the only permitted patch target; if it passes, the next required checkpoint is real Pixel 9 Pro XL / Android 16 visual parity before any R09 or post-R07 renderer work.
