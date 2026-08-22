@@ -77,6 +77,7 @@ class ShaderLabR08OverlayView @JvmOverloads constructor(
 
   private var groupIndex = 0
   private var controlIndex = 0
+  private var selectedControlId: ShaderLabControlId? = null
   private var editMode = false
   private var stepMode = ShaderLabStepMode.NORMAL
   private var expanded = false
@@ -327,15 +328,26 @@ class ShaderLabR08OverlayView @JvmOverloads constructor(
 
   private fun currentSpec(): ShaderLabControlSpec {
     val controls = currentGroupControls()
-    if (controlIndex !in controls.indices) controlIndex = 0
-    return controls[controlIndex]
+    check(controls.isNotEmpty()) { "Shader Lab group unexpectedly has no controls: ${currentGroup()}" }
+
+    val selectedIndex = selectedControlId?.let { id -> controls.indexOfFirst { it.id == id } } ?: -1
+    if (selectedIndex >= 0) {
+      controlIndex = selectedIndex
+    } else if (controlIndex !in controls.indices) {
+      controlIndex = 0
+    }
+
+    return controls[controlIndex].also { selectedControlId = it.id }
   }
 
   private fun moveControl(direction: Int) {
     val controls = currentGroupControls()
     if (controls.isEmpty()) return
-    controlIndex = wrap(controlIndex + direction, controls.size)
-    commandApi.execute(ShaderLabCommand.SelectControl(currentSpec().id))
+    val currentId = currentSpec().id
+    val current = controls.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: 0
+    controlIndex = wrap(current + direction, controls.size)
+    selectedControlId = controls[controlIndex].id
+    commandApi.execute(ShaderLabCommand.SelectControl(selectedControlId!!))
     render()
   }
 
@@ -343,6 +355,7 @@ class ShaderLabR08OverlayView @JvmOverloads constructor(
     if (groups.isEmpty() || editMode) return
     groupIndex = wrap(groupIndex + direction, groups.size)
     controlIndex = 0
+    selectedControlId = null
     commandApi.execute(ShaderLabCommand.SelectGroup(currentGroup()))
     commandApi.execute(ShaderLabCommand.SelectControl(currentSpec().id))
     render()
@@ -389,9 +402,12 @@ class ShaderLabR08OverlayView @JvmOverloads constructor(
    * Touch semantics deliberately separate browse-repeat from adjustment.
    * Browse starts immediately and may repeat while held. Edit mode performs
    * exactly one adjustment on release, regardless of hold duration.
+   *
+   * Direction buttons intentionally use only this touch path. A second Android
+   * click listener can synthesize another navigation action after ACTION_UP on
+   * some devices, which makes a single tap skip a control.
    */
   private fun installDirectionalTouch(button: Button, direction: Int) {
-    button.setOnClickListener { handleDirection(direction) }
     button.setOnTouchListener { _, event ->
       when (event.actionMasked) {
         MotionEvent.ACTION_DOWN -> {
