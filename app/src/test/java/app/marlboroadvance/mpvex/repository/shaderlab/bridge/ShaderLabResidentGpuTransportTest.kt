@@ -173,7 +173,7 @@ class ShaderLabResidentGpuTransportTest {
       val value = strings[property]
       if (corruptNextReadback && property == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) {
         corruptNextReadback = false
-        return value?.replace("LUMA_CONTRAST=0.77700000000000002", "LUMA_CONTRAST=0.123")
+        return "LUMA_CONTRAST=0.123"
       }
       return value
     }
