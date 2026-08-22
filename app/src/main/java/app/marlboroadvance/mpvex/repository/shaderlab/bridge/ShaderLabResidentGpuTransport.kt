@@ -12,16 +12,16 @@ import kotlin.math.roundToLong
 /**
  * R08 resident vo=gpu parameter transport.
  *
- * The shader file remains resident and immutable. Pixel 9 Pro XL device testing
- * established that changing glsl-shader-opts alone does not update parameters
- * captured by an already-created vo=gpu shader hook, so an ordinary live edit
- * now refreshes that same resident hook after publishing the complete PARAM set.
- * This is a list detach/reattach only: no shader source is regenerated or
- * written, and no runtime A/B shader file is used for ordinary tuning.
+ * The shader file and hook remain resident. The R08 native mpv patch treats a
+ * glsl-shader-opts-only update as an in-place user-shader PARAM refresh, so an
+ * ordinary edit is just one option write/read-back and the next rendered frame
+ * receives the new GPU uniform values. No shader source is regenerated, no
+ * runtime A/B file is touched, and no shader-list detach/reattach occurs while
+ * dragging a live control.
  *
- * Runtime option writes deliberately target mpv's explicit options/ property
- * namespace. Every production resident publish is read back from libmpv before
- * Android accepts it as authoritative.
+ * Bypass/hold-original uses the private R08_BYPASS resident PARAM. This keeps
+ * the hook resident as well; Lua still owns restoration of direct mpv picture
+ * properties for a true original comparison.
  */
 internal class ShaderLabResidentGpuTransport(
   private val transport: ShaderLabMpvTransport,
@@ -44,24 +44,18 @@ internal class ShaderLabResidentGpuTransport(
   }
 
   /**
-   * Publish the complete resident parameter set and refresh the existing vo=gpu
-   * hook when SDR processing is active. On failure, restore both the previous
-   * option set and the previous resident hook before surfacing the error.
+   * Publish the complete resident parameter set. The native vo=gpu patch
+   * updates the already-parsed hook's uniform values in-place. On failure the
+   * previous complete set is restored without touching glsl-shaders.
    */
   fun publish(values: Map<ShaderLabControlId, Double>) {
     val normalized = ShaderLabControlCatalog.normalizeValues(values)
     val nextOptions = encodeOptions(normalized)
     val previousOptions = lastGoodOptions
     try {
-      setShaderOptions(nextOptions)
-      verifyShaderOptions(nextOptions)
-      refreshActiveResidentHookIfNeeded()
+      setAndVerifyOptions(optionsForView(nextOptions))
     } catch (error: Throwable) {
-      runCatching {
-        setShaderOptions(previousOptions)
-        verifyShaderOptions(previousOptions)
-        refreshActiveResidentHookIfNeeded()
-      }
+      runCatching { setAndVerifyOptions(optionsForView(previousOptions)) }
       throw error
     }
     lastGoodValues = normalized
@@ -71,8 +65,8 @@ internal class ShaderLabResidentGpuTransport(
 
   /**
    * Legacy preset/state actions may still alter Lua's value bank. Adopt that
-   * bank only at an explicit compatibility boundary, then restore the single
-   * resident shader as the active SDR shader.
+   * bank at an explicit compatibility boundary, then publish it through the
+   * same resident live-uniform path.
    */
   fun adoptLegacyValues(values: Map<ShaderLabControlId, Double>, sourceKind: ShaderLabSourceKind) {
     lastGoodValues = ShaderLabControlCatalog.normalizeValues(values)
@@ -92,13 +86,17 @@ internal class ShaderLabResidentGpuTransport(
   }
 
   /**
-   * Lua still owns original-property capture/restore for bypass and hold preview.
-   * Mirror that comparison state for the resident shader itself.
+   * Comparison state is a private uniform branch, never a shader-list mutation.
+   * Direct mpv properties are still restored/reapplied by the legacy controller.
    */
   fun setOriginalView(active: Boolean, sourceKind: ShaderLabSourceKind) {
     if (originalViewActive == active && sourceKind == attachedSourceKind) return
     originalViewActive = active
-    reconcileSource(sourceKind, force = true)
+    if (sourceKind == ShaderLabSourceKind.SDR && residentShaderIsAttached()) {
+      setAndVerifyOptions(optionsForView(lastGoodOptions))
+    } else {
+      reconcileSource(sourceKind)
+    }
   }
 
   fun reconcileSource(sourceKind: ShaderLabSourceKind, force: Boolean = false) {
@@ -106,17 +104,14 @@ internal class ShaderLabResidentGpuTransport(
 
     when (sourceKind) {
       ShaderLabSourceKind.SDR -> {
+        // Legacy generated runtime slots must never compete with R08.
         removeManagedShader(LEGACY_RUNTIME_A_PATH)
         removeManagedShader(LEGACY_RUNTIME_B_PATH)
-        removeManagedShader(RESIDENT_SHADER_PATH)
-        if (!originalViewActive) {
-          // vo=gpu captures PARAM values while constructing the hook. Publish
-          // the complete option set first, then create a fresh hook from the
-          // same immutable resident shader file.
-          setShaderOptions(lastGoodOptions)
-          verifyShaderOptions(lastGoodOptions)
-          appendResidentShader()
-        }
+
+        // Publish values before first attachment. Once attached, subsequent
+        // PARAM/bypass changes are native in-place uniform updates.
+        setAndVerifyOptions(optionsForView(lastGoodOptions))
+        ensureResidentShaderAttached()
       }
       ShaderLabSourceKind.HDR_PQ,
       ShaderLabSourceKind.HDR_HLG -> {
@@ -137,19 +132,26 @@ internal class ShaderLabResidentGpuTransport(
     originalViewActive = false
   }
 
-  private fun refreshActiveResidentHookIfNeeded() {
-    if (attachedSourceKind != ShaderLabSourceKind.SDR || originalViewActive) return
-    removeManagedShader(RESIDENT_SHADER_PATH)
-    appendResidentShader()
+  private fun optionsForView(base: String): String =
+    "$base,$INTERNAL_BYPASS_PARAM=${if (originalViewActive) 1 else 0}"
+
+  private fun setAndVerifyOptions(options: String) {
+    transport.command("set", GLSL_SHADER_OPTS_PROPERTY, options)
+    verifyShaderOptions(options)
   }
 
-  private fun appendResidentShader() {
+  private fun ensureResidentShaderAttached() {
+    if (residentShaderIsAttached()) return
     transport.command("change-list", GLSL_SHADERS_LIST_OPTION, "append", RESIDENT_SHADER_PATH)
     verifyResidentShaderAttached()
   }
 
-  private fun setShaderOptions(options: String) {
-    transport.command("set", GLSL_SHADER_OPTS_PROPERTY, options)
+  private fun residentShaderIsAttached(): Boolean {
+    val shaderList =
+      transport.getString(GLSL_SHADERS_PROPERTY)
+        ?: transport.getString(GLSL_SHADERS_LIST_OPTION)
+        ?: return false
+    return shaderList.contains(RESIDENT_SHADER_PATH)
   }
 
   private fun verifyShaderOptions(expected: String) {
@@ -176,16 +178,7 @@ internal class ShaderLabResidentGpuTransport(
   }
 
   private fun verifyResidentShaderAttached() {
-    val shaderList =
-      transport.getString(GLSL_SHADERS_PROPERTY)
-        ?: transport.getString(GLSL_SHADERS_LIST_OPTION)
-        ?: run {
-          if (transport is ShaderLabR08ProbedMpvTransport) {
-            error("mpv did not expose a glsl-shaders read-back after resident shader attach")
-          }
-          return
-        }
-    check(shaderList.contains(RESIDENT_SHADER_PATH)) {
+    check(residentShaderIsAttached()) {
       "Resident shader was not attached by mpv: $RESIDENT_SHADER_PATH"
     }
   }
@@ -201,7 +194,7 @@ internal class ShaderLabResidentGpuTransport(
       .toMap()
 
   private fun removeManagedShader(path: String) {
-    // mpv may report an absent list entry as an error. That is harmless here.
+    // An absent path may report an error. That is harmless here.
     runCatching { transport.command("change-list", GLSL_SHADERS_LIST_OPTION, "remove", path) }
   }
 
@@ -211,6 +204,7 @@ internal class ShaderLabResidentGpuTransport(
     const val GLSL_SHADER_OPTS_BARE_PROPERTY = "glsl-shader-opts"
     const val GLSL_SHADERS_PROPERTY = "options/glsl-shaders"
     const val GLSL_SHADERS_LIST_OPTION = "glsl-shaders"
+    const val INTERNAL_BYPASS_PARAM = "R08_BYPASS"
     const val RESIDENT_SHADER_PATH =
       "/storage/emulated/0/mpv/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl"
     const val LEGACY_RUNTIME_A_PATH =
