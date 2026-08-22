@@ -1,5 +1,6 @@
 package app.marlboroadvance.mpvex.ui.player.controls
 
+import android.view.KeyEvent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -20,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -33,20 +33,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.nativeKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,9 +61,6 @@ import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabGroup
 import app.marlboroadvance.mpvex.repository.shaderlab.catalog.ShaderLabPresetId
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommand
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommandApi
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -72,10 +68,14 @@ import kotlin.math.roundToInt
 /**
  * First production-oriented Shader Lab surface.
  *
- * Unlike the R08 debug harness, this is a native Compose editor: Material
- * sliders emit continuously during pointer movement and are coalesced to at
- * most one backend update per display frame. The native mpv R08 patch then
- * updates the already-resident vo=gpu uniforms in-place.
+ * Unlike the R08 debug harness, this is a native Compose editor. Like the
+ * player's native brightness slider, every slider movement is applied
+ * immediately. The destination is the resident vo=gpu PARAM set rather than
+ * WindowManager brightness, so there is no Lua round-trip, debounce/apply
+ * phase, shader regeneration, or shader-list detach/reattach.
+ *
+ * Visibility is owned by [ShaderLabUiController] because the player controls
+ * and this XML-hosted overlay are separate Compose trees.
  */
 @Composable
 fun ShaderLabStudioOverlay(
@@ -83,25 +83,19 @@ fun ShaderLabStudioOverlay(
 ) {
   val bridge = koinInject<MpvShaderLabBridge>()
   val commandApi = koinInject<ShaderLabCommandApi>()
+  val uiController = koinInject<ShaderLabUiController>()
   val backend by bridge.state.collectAsState()
-  var open by remember { mutableStateOf(false) }
+  val visible by uiController.visible.collectAsState()
 
-  Column(
+  AnimatedVisibility(
+    visible = visible,
     modifier = modifier.width(430.dp),
-    horizontalAlignment = Alignment.End,
-    verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    Button(onClick = { open = !open }) {
-      Text(if (open) "LAB  ×" else "LAB")
-    }
-
-    AnimatedVisibility(visible = open) {
-      ShaderLabStudioPanel(
-        backend = backend,
-        commandApi = commandApi,
-        onClose = { open = false },
-      )
-    }
+    ShaderLabStudioPanel(
+      backend = backend,
+      commandApi = commandApi,
+      onClose = uiController::close,
+    )
   }
 }
 
@@ -112,8 +106,6 @@ private fun ShaderLabStudioPanel(
   commandApi: ShaderLabCommandApi,
   onClose: () -> Unit,
 ) {
-  val scope = rememberCoroutineScope()
-  val liveDispatcher = remember(commandApi, scope) { FrameCoalescedShaderDispatcher(scope, commandApi) }
   val visibleControls = remember {
     ShaderLabControlCatalog.controls.filterNot { it.id == ShaderLabControlId.SHADER_PROOF }
   }
@@ -150,7 +142,7 @@ private fun ShaderLabStudioPanel(
               backend.lastError != null -> "ERROR • ${backend.lastError}"
               backend.previewOriginal -> "ORIGINAL HOLD • RESIDENT"
               backend.bypassed -> "ORIGINAL • RESIDENT"
-              backend.ready -> "LIVE • ${backend.sourceKind.name.replace('_', '-')} • FRAME-SYNC"
+              backend.ready -> "LIVE • ${backend.sourceKind.name.replace('_', '-')} • NATIVE"
               backend.connected -> "SYNCING"
               else -> "OFFLINE"
             },
@@ -202,7 +194,9 @@ private fun ShaderLabStudioPanel(
             group = selectedGroup,
             values = backend.values,
             enabled = editingEnabled,
-            onValueChange = liveDispatcher::submit,
+            onValueChange = { id, value ->
+              commandApi.execute(ShaderLabCommand.SetValue(id, value))
+            },
           )
         }
 
@@ -218,7 +212,7 @@ private fun ShaderLabStudioPanel(
                 val to = presetRef(backend.values[ShaderLabControlId.MORPH_TO] ?: 2.0)
                 commandApi.execute(ShaderLabCommand.Morph(from, to, value))
               } else {
-                liveDispatcher.submit(spec.id, value)
+                commandApi.execute(ShaderLabCommand.SetValue(spec.id, value))
               }
             },
           )
@@ -263,17 +257,49 @@ private fun HoldOriginalButton(
   active: Boolean,
   modifier: Modifier = Modifier,
 ) {
+  var remoteHeld by remember { mutableStateOf(false) }
+
   OutlinedButton(
     onClick = {},
-    modifier = modifier.pointerInput(commandApi) {
-      awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        down.consume()
-        commandApi.execute(ShaderLabCommand.PreviewOriginalStart)
-        waitForUpOrCancellation()
-        commandApi.execute(ShaderLabCommand.PreviewOriginalEnd)
+    modifier = modifier
+      .onPreviewKeyEvent { event ->
+        val native = event.nativeKeyEvent
+        val isHoldKey =
+          native.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            native.keyCode == KeyEvent.KEYCODE_ENTER ||
+            native.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            native.keyCode == KeyEvent.KEYCODE_SPACE
+        if (!isHoldKey) {
+          false
+        } else {
+          when (native.action) {
+            KeyEvent.ACTION_DOWN -> {
+              if (!remoteHeld) {
+                remoteHeld = true
+                commandApi.execute(ShaderLabCommand.PreviewOriginalStart)
+              }
+              true
+            }
+            KeyEvent.ACTION_UP -> {
+              if (remoteHeld) {
+                remoteHeld = false
+                commandApi.execute(ShaderLabCommand.PreviewOriginalEnd)
+              }
+              true
+            }
+            else -> false
+          }
+        }
       }
-    },
+      .pointerInput(commandApi) {
+        awaitEachGesture {
+          val down = awaitFirstDown(requireUnconsumed = false)
+          down.consume()
+          commandApi.execute(ShaderLabCommand.PreviewOriginalStart)
+          waitForUpOrCancellation()
+          commandApi.execute(ShaderLabCommand.PreviewOriginalEnd)
+        }
+      },
   ) {
     Text(if (active) "ORIGINAL" else "HOLD ORIGINAL")
   }
@@ -362,6 +388,7 @@ private fun ShaderCurveEditor(
         .pointerInput(group, editable) {
           if (!editable) return@pointerInput
           var active: ShaderLabControlId? = null
+          var dragValue: Double? = null
           detectDragGestures(
             onDragStart = { pos ->
               active = if (isLuma) {
@@ -377,19 +404,30 @@ private fun ShaderCurveEditor(
                   else -> ShaderLabControlId.BRIGHT_CHROMA
                 }
               }
+              active?.let { id ->
+                val spec = ShaderLabControlCatalog.spec(id)
+                dragValue = values[id] ?: spec.defaultValue
+              }
             },
-            onDragEnd = { active = null },
-            onDragCancel = { active = null },
+            onDragEnd = {
+              active = null
+              dragValue = null
+            },
+            onDragCancel = {
+              active = null
+              dragValue = null
+            },
           ) { change, dragAmount ->
             change.consume()
             val id = active ?: return@detectDragGestures
             val spec = ShaderLabControlCatalog.spec(id)
-            val current = values[id] ?: spec.defaultValue
+            val current = dragValue ?: values[id] ?: spec.defaultValue
             val next = if (id == ShaderLabControlId.LUMA_PIVOT) {
               spec.clamp(change.position.x / size.width * (spec.maxValue - spec.minValue) + spec.minValue)
             } else {
               spec.clamp(current - dragAmount.y / size.height * (spec.maxValue - spec.minValue) * 0.55)
             }
+            dragValue = next
             onValueChange(id, next)
           }
         },
@@ -439,30 +477,6 @@ private fun ShaderCurveEditor(
             val yn = (v - spec.minValue) / (spec.maxValue - spec.minValue)
             drawCircle(handle, radius = 8f, center = Offset((x * w).toFloat(), ((1.0 - yn) * h).toFloat()))
           }
-        }
-      }
-    }
-  }
-}
-
-@Stable
-private class FrameCoalescedShaderDispatcher(
-  private val scope: CoroutineScope,
-  private val api: ShaderLabCommandApi,
-) {
-  private val pending = linkedMapOf<ShaderLabControlId, Double>()
-  private var job: Job? = null
-
-  fun submit(id: ShaderLabControlId, value: Double) {
-    pending[id] = value
-    if (job?.isActive == true) return
-    job = scope.launch {
-      while (pending.isNotEmpty()) {
-        withFrameNanos { }
-        val frame = pending.toMap()
-        pending.clear()
-        frame.forEach { (control, next) ->
-          api.execute(ShaderLabCommand.SetValue(control, next))
         }
       }
     }

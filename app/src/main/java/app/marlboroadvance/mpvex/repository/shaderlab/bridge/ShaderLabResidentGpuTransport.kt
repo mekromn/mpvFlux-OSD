@@ -68,20 +68,45 @@ internal class ShaderLabResidentGpuTransport(
    * bank at an explicit compatibility boundary, then publish it through the
    * same resident live-uniform path. If the SDR resident hook is already
    * attached, adoption must not rebuild or churn the shader list.
+   *
+   * The incoming bank is authoritative only after mpv accepts/reads it back.
+   * A failed adoption restores the previous resident PARAM set and Android's
+   * previous last-known-good value bank.
    */
   fun adoptLegacyValues(values: Map<ShaderLabControlId, Double>, sourceKind: ShaderLabSourceKind) {
-    lastGoodValues = ShaderLabControlCatalog.normalizeValues(values)
-    lastGoodOptions = encodeOptions(lastGoodValues)
-    authoritative = true
+    val previousValues = lastGoodValues
+    val previousOptions = lastGoodOptions
+    val previousAuthoritative = authoritative
+    val nextValues = ShaderLabControlCatalog.normalizeValues(values)
+    val nextOptions = encodeOptions(nextValues)
 
-    if (
-      sourceKind == ShaderLabSourceKind.SDR &&
-        attachedSourceKind == ShaderLabSourceKind.SDR &&
-        residentShaderIsAttached()
-    ) {
-      setAndVerifyOptions(optionsForView(lastGoodOptions))
-    } else {
-      reconcileSource(sourceKind, force = true)
+    try {
+      lastGoodValues = nextValues
+      lastGoodOptions = nextOptions
+      authoritative = true
+
+      if (
+        sourceKind == ShaderLabSourceKind.SDR &&
+          attachedSourceKind == ShaderLabSourceKind.SDR &&
+          residentShaderIsAttached()
+      ) {
+        setAndVerifyOptions(optionsForView(nextOptions))
+      } else {
+        reconcileSource(sourceKind, force = true)
+      }
+    } catch (error: Throwable) {
+      lastGoodValues = previousValues
+      lastGoodOptions = previousOptions
+      authoritative = previousAuthoritative
+
+      if (
+        sourceKind == ShaderLabSourceKind.SDR &&
+          attachedSourceKind == ShaderLabSourceKind.SDR &&
+          residentShaderIsAttached()
+      ) {
+        runCatching { setAndVerifyOptions(optionsForView(previousOptions)) }
+      }
+      throw error
     }
   }
 
