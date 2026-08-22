@@ -41,7 +41,7 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
-  fun attachObservesStateGammaAndSixMpvPropertiesAndRequestsHandshake() {
+  fun attachObservesStateGammaPathAndSixMpvPropertiesAndRequestsHandshake() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
 
@@ -51,6 +51,7 @@ class MpvShaderLabBridgeTest {
     assertTrue(MpvShaderLabBridge.NATIVE_STATE_PROPERTY in transport.stringProperties)
     assertTrue(MpvShaderLabBridge.USER_DATA_ROOT_PROPERTY in transport.stringProperties)
     assertTrue(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY in transport.stringProperties)
+    assertTrue(MpvShaderLabBridge.PATH_PROPERTY in transport.stringProperties)
     assertEquals(
       setOf("sdr-intensity", "brightness", "contrast", "gamma", "saturation", "hue"),
       transport.doubleProperties,
@@ -193,7 +194,7 @@ class MpvShaderLabBridgeTest {
   }
 
   @Test
-  fun bypassAndPreviewLuaStateSwitchPrivateResidentUniformWithoutShaderListChurn() {
+  fun nativeBypassAndPreviewOwnResidentUniformAndIgnoreStaleLuaCompareState() {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
@@ -201,24 +202,44 @@ class MpvShaderLabBridgeTest {
     transport.commands.clear()
 
     bridge.toggleBypass()
-    assertTrue(transport.commands.contains(listOf("script-message", "p9lab-native-bypass")))
-
-    transport.emitText(
-      MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
-      "__ready=1\n__serial=2\n__sdr=1\n__source_gamma=bt.1886\n__bypassed=1\n__preview=0\n__swaps=0\n__apply_busy=0",
-    )
+    assertTrue(bridge.state.value.bypassed)
+    assertFalse(bridge.state.value.previewOriginal)
+    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-bypass" })
+    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-preview-start" })
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     val bypassOn = transport.commands.last { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
     assertTrue(bypassOn[2].contains("R08_BYPASS=1"))
-    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     assertTrue(transport.shaderList().contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH))
 
-    transport.commands.clear()
     transport.emitText(
       MpvShaderLabBridge.NATIVE_STATE_PROPERTY,
-      "__ready=1\n__serial=3\n__sdr=1\n__source_gamma=bt.1886\n__bypassed=0\n__preview=0\n__swaps=0\n__apply_busy=0",
+      "__ready=1\n__serial=2\n__sdr=1\n__source_gamma=bt.1886\n__bypassed=0\n__preview=0\n__swaps=0\n__apply_busy=0",
     )
-    val bypassOff = transport.commands.single { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
+    assertTrue(bridge.state.value.bypassed)
+    assertFalse(bridge.state.value.previewOriginal)
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+
+    transport.commands.clear()
+    bridge.toggleBypass()
+    assertFalse(bridge.state.value.bypassed)
+    val bypassOff = transport.commands.last { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
     assertTrue(bypassOff[2].contains("R08_BYPASS=0"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+
+    transport.commands.clear()
+    bridge.setPreviewOriginal(true)
+    assertTrue(bridge.state.value.previewOriginal)
+    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-preview-start" })
+    val previewOn = transport.commands.last { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
+    assertTrue(previewOn[2].contains("R08_BYPASS=1"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+
+    transport.commands.clear()
+    bridge.setPreviewOriginal(false)
+    assertFalse(bridge.state.value.previewOriginal)
+    assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-preview-end" })
+    val previewOff = transport.commands.last { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
+    assertTrue(previewOff[2].contains("R08_BYPASS=0"))
     assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     assertTrue(transport.shaderList().contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH))
   }
@@ -295,6 +316,7 @@ class MpvShaderLabBridgeTest {
     val transport = FakeTransport()
     val bridge = MpvShaderLabBridge(transport)
     bridge.attach()
+    transport.emitText(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY, "bt.1886")
     transport.failCommands = true
 
     val result = ShaderLabCommandApi(bridge).execute(ShaderLabCommand.ToggleBypass)
@@ -356,6 +378,7 @@ class MpvShaderLabBridgeTest {
       when {
         args.getOrNull(0) == "set" && args.size >= 3 -> {
           strings[args[1]] = args[2]
+          args[2].toDoubleOrNull()?.let { doubles[args[1]] = it }
           if (args[1] == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) {
             strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY] = args[2]
           }
