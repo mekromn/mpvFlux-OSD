@@ -26,7 +26,7 @@ class ShaderLabResidentGpuTransportTest {
   }
 
   @Test
-  fun completeOptionEncodingUsesAllParamsHighPrecisionAndIntegerSyntax() {
+  fun completeOptionEncodingUsesAllCatalogParamsHighPrecisionAndIntegerSyntax() {
     val values = ShaderLabControlCatalog.defaults().toMutableMap().apply {
       this[ShaderLabControlId.LUMA_CONTRAST] = 0.3101234567890123
       this[ShaderLabControlId.GAMUT_ITERATIONS] = 11.0
@@ -43,12 +43,11 @@ class ShaderLabResidentGpuTransportTest {
     assertTrue(encoded.contains("LUMA_CONTRAST=0.310123456789012"))
     assertTrue(encoded.contains("GAMUT_ITERATIONS=11"))
     assertTrue(encoded.contains("DEBUG_VIEW=3"))
-    assertFalse(encoded.contains("GAMUT_ITERATIONS=11.0"))
-    assertFalse(encoded.contains("DEBUG_VIEW=3.0"))
+    assertFalse(encoded.contains(ShaderLabResidentGpuTransport.INTERNAL_BYPASS_PARAM))
   }
 
   @Test
-  fun activeSdrPublishSetsOptionsThenRefreshesSameResidentHook() {
+  fun activeSdrPublishIsOptionOnlyAndNeverMutatesShaderList() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
     gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
@@ -59,32 +58,12 @@ class ShaderLabResidentGpuTransportTest {
     }
     gpu.publish(changed)
 
-    assertTrue(
-      transport.commands.any {
-        it.getOrNull(0) == "set" &&
-          it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY
-      },
-    )
-    assertTrue(
-      transport.commands.any {
-        it == listOf(
-          "change-list",
-          ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION,
-          "remove",
-          ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH,
-        )
-      },
-    )
-    assertTrue(
-      transport.commands.any {
-        it == listOf(
-          "change-list",
-          ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION,
-          "append",
-          ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH,
-        )
-      },
-    )
+    assertEquals(1, transport.commands.size)
+    assertEquals("set", transport.commands.single()[0])
+    assertEquals(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY, transport.commands.single()[1])
+    assertTrue(transport.commands.single()[2].contains("BRIGHT_CHROMA=0.333333333333333"))
+    assertTrue(transport.commands.single()[2].contains("R08_BYPASS=0"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     assertTrue(
       transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY)
         .contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
@@ -92,7 +71,32 @@ class ShaderLabResidentGpuTransportTest {
   }
 
   @Test
-  fun originalViewPublishUpdatesStoredOptionsWithoutReattachingShader() {
+  fun bypassAndPreviewStateUseUniformOnlyAndKeepResidentHookAttached() {
+    val transport = FakeTransport()
+    val gpu = ShaderLabResidentGpuTransport(transport)
+    gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
+    transport.commands.clear()
+
+    gpu.setOriginalView(true, ShaderLabSourceKind.SDR)
+
+    assertEquals(1, transport.commands.size)
+    assertEquals("set", transport.commands.single()[0])
+    assertTrue(transport.commands.single()[2].contains("R08_BYPASS=1"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+    assertTrue(
+      transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY)
+        .contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
+    )
+
+    transport.commands.clear()
+    gpu.setOriginalView(false, ShaderLabSourceKind.SDR)
+    assertEquals(1, transport.commands.size)
+    assertTrue(transport.commands.single()[2].contains("R08_BYPASS=0"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+  }
+
+  @Test
+  fun valuesCanChangeWhileBypassedWithoutReattachingShader() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
     gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
@@ -104,12 +108,10 @@ class ShaderLabResidentGpuTransportTest {
     }
     gpu.publish(changed)
 
-    assertTrue(transport.commands.any { it.firstOrNull() == "set" })
-    assertFalse(transport.commands.any { it.getOrNull(2) == "append" })
-    assertFalse(
-      transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY)
-        .contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
-    )
+    assertEquals(1, transport.commands.size)
+    assertTrue(transport.commands.single()[2].contains("CHROMA_MASTER=0.0000000000000000"))
+    assertTrue(transport.commands.single()[2].contains("R08_BYPASS=1"))
+    assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
   }
 
   @Test
@@ -134,43 +136,25 @@ class ShaderLabResidentGpuTransportTest {
   }
 
   @Test
-  fun sourceAndComparisonBoundariesOwnManagedShaderAttachment() {
+  fun sourceBoundariesAttachResidentOnlyOnceAndRemoveItForHdr() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
     gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
 
     assertTrue(
-      transport.commands.contains(
-        listOf(
-          "change-list",
-          ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION,
-          "append",
-          ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH,
-        ),
-      ),
-    )
-    assertTrue(
-      transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY)
-        .contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
-    )
-
-    transport.commands.clear()
-    gpu.setOriginalView(true, ShaderLabSourceKind.SDR)
-    assertFalse(transport.commands.any { it.getOrNull(2) == "append" })
-    assertTrue(
       transport.commands.any {
         it == listOf(
           "change-list",
           ShaderLabResidentGpuTransport.GLSL_SHADERS_LIST_OPTION,
-          "remove",
+          "append",
           ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH,
         )
       },
     )
 
     transport.commands.clear()
-    gpu.setOriginalView(false, ShaderLabSourceKind.SDR)
-    assertTrue(
+    gpu.reconcileSource(ShaderLabSourceKind.SDR, force = true)
+    assertFalse(
       transport.commands.any {
         it.getOrNull(2) == "append" &&
           it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH
@@ -180,7 +164,12 @@ class ShaderLabResidentGpuTransportTest {
     transport.commands.clear()
     gpu.reconcileSource(ShaderLabSourceKind.HDR_PQ)
     assertFalse(transport.commands.any { it.getOrNull(2) == "append" })
-    assertTrue(transport.commands.any { it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH })
+    assertTrue(
+      transport.commands.any {
+        it.getOrNull(2) == "remove" &&
+          it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH
+      },
+    )
   }
 
   @Test
