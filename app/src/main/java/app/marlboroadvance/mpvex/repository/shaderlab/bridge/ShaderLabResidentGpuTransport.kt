@@ -66,13 +66,23 @@ internal class ShaderLabResidentGpuTransport(
   /**
    * Legacy preset/state actions may still alter Lua's value bank. Adopt that
    * bank at an explicit compatibility boundary, then publish it through the
-   * same resident live-uniform path.
+   * same resident live-uniform path. If the SDR resident hook is already
+   * attached, adoption must not rebuild or churn the shader list.
    */
   fun adoptLegacyValues(values: Map<ShaderLabControlId, Double>, sourceKind: ShaderLabSourceKind) {
     lastGoodValues = ShaderLabControlCatalog.normalizeValues(values)
     lastGoodOptions = encodeOptions(lastGoodValues)
     authoritative = true
-    reconcileSource(sourceKind, force = true)
+
+    if (
+      sourceKind == ShaderLabSourceKind.SDR &&
+        attachedSourceKind == ShaderLabSourceKind.SDR &&
+        residentShaderIsAttached()
+    ) {
+      setAndVerifyOptions(optionsForView(lastGoodOptions))
+    } else {
+      reconcileSource(sourceKind, force = true)
+    }
   }
 
   /** Keeps Android-authoritative resident values from being overwritten by an old Lua snapshot. */
