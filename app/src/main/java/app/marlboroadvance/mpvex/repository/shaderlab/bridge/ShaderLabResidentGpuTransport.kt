@@ -12,16 +12,16 @@ import kotlin.math.roundToLong
 /**
  * R08 resident vo=gpu parameter transport.
  *
- * Normal tuning writes one complete glsl-shader-opts value. It never writes a
- * shader file and never changes the glsl-shaders list. Shader attachment is
- * reconciled only when playback classification/comparison state changes or
- * when the legacy Lua compatibility path intentionally changed a runtime shader.
+ * The shader file remains resident and immutable. Pixel 9 Pro XL device testing
+ * established that changing glsl-shader-opts alone does not update parameters
+ * captured by an already-created vo=gpu shader hook, so an ordinary live edit
+ * now refreshes that same resident hook after publishing the complete PARAM set.
+ * This is a list detach/reattach only: no shader source is regenerated or
+ * written, and no runtime A/B shader file is used for ordinary tuning.
  *
  * Runtime option writes deliberately target mpv's explicit options/ property
- * namespace. The original R08 test build used the bare option name and updated
- * Android state optimistically; on-device testing showed values moving while
- * the rendered image stayed unchanged. Every production resident publish is now
- * read back from libmpv before Android accepts it as authoritative.
+ * namespace. Every production resident publish is read back from libmpv before
+ * Android accepts it as authoritative.
  */
 internal class ShaderLabResidentGpuTransport(
   private val transport: ShaderLabMpvTransport,
@@ -44,8 +44,9 @@ internal class ShaderLabResidentGpuTransport(
   }
 
   /**
-   * Publish the complete resident parameter set. The old complete set is
-   * restored on a synchronous transport/read-back failure; no GLSL file is touched.
+   * Publish the complete resident parameter set and refresh the existing vo=gpu
+   * hook when SDR processing is active. On failure, restore both the previous
+   * option set and the previous resident hook before surfacing the error.
    */
   fun publish(values: Map<ShaderLabControlId, Double>) {
     val normalized = ShaderLabControlCatalog.normalizeValues(values)
@@ -54,10 +55,12 @@ internal class ShaderLabResidentGpuTransport(
     try {
       setShaderOptions(nextOptions)
       verifyShaderOptions(nextOptions)
+      refreshActiveResidentHookIfNeeded()
     } catch (error: Throwable) {
       runCatching {
         setShaderOptions(previousOptions)
         verifyShaderOptions(previousOptions)
+        refreshActiveResidentHookIfNeeded()
       }
       throw error
     }
@@ -107,14 +110,12 @@ internal class ShaderLabResidentGpuTransport(
         removeManagedShader(LEGACY_RUNTIME_B_PATH)
         removeManagedShader(RESIDENT_SHADER_PATH)
         if (!originalViewActive) {
-          // Set PARAM values before attaching the resident shader. vo=gpu reads
-          // glsl-shader-opts while constructing the hook, so this ordering also
-          // gives us a correct initial frame even on builds where a later option
-          // mutation would not recreate an already-loaded hook.
+          // vo=gpu captures PARAM values while constructing the hook. Publish
+          // the complete option set first, then create a fresh hook from the
+          // same immutable resident shader file.
           setShaderOptions(lastGoodOptions)
           verifyShaderOptions(lastGoodOptions)
-          transport.command("change-list", GLSL_SHADERS_LIST_OPTION, "append", RESIDENT_SHADER_PATH)
-          verifyResidentShaderAttached()
+          appendResidentShader()
         }
       }
       ShaderLabSourceKind.HDR_PQ,
@@ -134,6 +135,17 @@ internal class ShaderLabResidentGpuTransport(
   fun onDetached() {
     attachedSourceKind = ShaderLabSourceKind.NOT_READY
     originalViewActive = false
+  }
+
+  private fun refreshActiveResidentHookIfNeeded() {
+    if (attachedSourceKind != ShaderLabSourceKind.SDR || originalViewActive) return
+    removeManagedShader(RESIDENT_SHADER_PATH)
+    appendResidentShader()
+  }
+
+  private fun appendResidentShader() {
+    transport.command("change-list", GLSL_SHADERS_LIST_OPTION, "append", RESIDENT_SHADER_PATH)
+    verifyResidentShaderAttached()
   }
 
   private fun setShaderOptions(options: String) {
