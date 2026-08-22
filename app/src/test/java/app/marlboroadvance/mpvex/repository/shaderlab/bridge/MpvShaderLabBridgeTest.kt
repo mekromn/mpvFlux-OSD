@@ -166,9 +166,10 @@ class MpvShaderLabBridgeTest {
     assertTrue(transport.commands.contains(listOf("set", "brightness", "4.2500000000000000")))
     val optsCommand = transport.commands.single { it.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY }
     assertEquals("set", optsCommand[0])
+    assertTrue(optsCommand[2].contains("SHADER_PROOF=0"))
     assertTrue(optsCommand[2].contains("LUMA_CONTRAST=0.31000000000000000"))
     assertTrue(optsCommand[2].contains("GAMUT_ITERATIONS=9"))
-    assertEquals(39, optsCommand[2].split(',').size)
+    assertEquals(40, optsCommand[2].split(',').size)
     assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     assertFalse(transport.commands.any { it.getOrNull(1) == "p9lab-native-set" })
     assertEquals(0.31, bridge.state.value.values.getValue(ShaderLabControlId.LUMA_CONTRAST), 0.0)
