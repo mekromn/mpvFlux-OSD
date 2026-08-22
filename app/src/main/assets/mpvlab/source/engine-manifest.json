@@ -1,7 +1,7 @@
 {
   "canonicalWorkspace": "/storage/emulated/0/mpv",
-  "controlCatalogVersion": "legacy-v6.1.1",
-  "engineVersion": "6.1.1-source-r08-resident-2",
+  "controlCatalogVersion": "legacy-v6.1.1-typed-1",
+  "engineVersion": "6.1.1-source-r08-resident-3",
   "entrypoints": {
     "controller": "scripts/pixel9-shader-lab.lua",
     "inputConfig": "config/input.conf",
@@ -17,9 +17,9 @@
       "sha256": "4cb8d46deb3fafd1b9b4fae7ce0c89d224beceab3351e3abab8530499187e8e4"
     },
     {
-      "bytes": 2837,
+      "bytes": 3169,
       "path": "config/mpv.conf",
-      "sha256": "aac64fdccb46489b4211fc15d4db822ed6dfea8cc1f5cb9303bae67858825d1a"
+      "sha256": "4ed929e4def8dba1dfa8d6e598fe86462a8ac1d93b4827e24703a464c2d447fd"
     },
     {
       "bytes": 8294,
@@ -75,6 +75,7 @@
   "requiredMpvOptions": [
     "vo=gpu",
     "gpu-api=vulkan",
+    "gpu-context=androidvk",
     "hwdec=mediacodec-copy",
     "fbo-format=rgba16f",
     "scale=ewa_lanczossharp",
@@ -95,9 +96,10 @@
     "gamma=0",
     "saturation=0",
     "hue=0",
-    "script=\"/storage/emulated/0/mpv/scripts/pixel9-shader-lab.lua\"",
-    "input-conf=\"/storage/emulated/0/mpv/input.conf\"",
+    "input-conf=\"/storage/emulated/0/mpv/config/input.conf\"",
     "sid=no",
+    "secondary-sid=no",
+    "sub-auto=no",
     "[pixel9-sdr-expanded-v3.1]",
     "profile-desc=Pixel 9 Pro XL V3.1 resident shader lab",
     "profile-cond=(get(\"video-params/gamma\",\"\") ~= \"\" and get(\"video-params/gamma\",\"\") ~= \"pq\" and get(\"video-params/gamma\",\"\") ~= \"hlg\")",
@@ -105,8 +107,8 @@
     "SDR-intensity=4.16",
     "target-peak=auto",
     "target-colorspace-hint=no",
-    "inverse-tone-mapping=no",
-    "glsl-shaders=\"/storage/emulated/0/mpv/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl\""
+    "gamut-mapping-mode=perceptual",
+    "inverse-tone-mapping=no"
   ],
   "schemaVersion": 1,
   "sourceProvenance": {
@@ -116,7 +118,7 @@
     "payloadParts": 8,
     "payloadSha256": "e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6",
     "r07StateTransport": "R07 state-3: event-driven native state with Android MPVLib compatibility fallback through the string-converted user-data root map.",
-    "r08ResidentTransport": "R08 resident-2: vo=gpu PARAM shader with complete glsl-shader-opts transport; Lua preset/state saves receive state-only cache synchronization without ordinary GLSL regeneration.",
+    "r08ResidentTransport": "R08 resident-3: vo=gpu PARAM transport plus restored canonical config-dir/Pixel renderer defaults; Android owns controller loading and SDR resident shader attachment.",
     "repository": "mekromn/mpvFlux-OSD"
   }
 }
