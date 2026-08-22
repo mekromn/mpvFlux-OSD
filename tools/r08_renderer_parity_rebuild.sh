@@ -339,12 +339,51 @@ if readelf -dW "$FF" | grep -Fq 'Shared library: [libxml2.so]'; then
     exit 1
 fi
 
-# All rebuilt renderer/FFmpeg ELFs must reproduce R07 Android API 24 + NDK r29.
+# All rebuilt renderer/FFmpeg ELFs must reproduce the R07 Android API 24 +
+# NDK r29 identity. Parse the canonical .note.android.ident payload directly
+# instead of depending on host file(1) prose, which caused parity runs #22/#24
+# to false-negative after the native build itself completed successfully.
 : > /tmp/r08-renderer-parity-program-headers.txt
+: > /tmp/r08-renderer-parity-android-ident.txt
 for name in libmpv.so libavcodec.so libavdevice.so libavfilter.so libavformat.so libavutil.so libswresample.so libswscale.so; do
     so="$PREFIX/$name"
-    file "$so" | grep -F 'for Android 24'
-    file "$so" | grep -F 'built by NDK r29 (14206865)'
+    file "$so" | tee -a /tmp/r08-renderer-parity-android-ident.txt
+    python3 - "$so" "$R07_NDK_TAG" "$R07_NDK_BUILD" <<'PY'
+import re
+import struct
+import subprocess
+import sys
+
+so, expected_ndk, expected_build = sys.argv[1:]
+text = subprocess.check_output(
+    ['readelf', '-x', '.note.android.ident', so],
+    text=True,
+    stderr=subprocess.STDOUT,
+)
+words = []
+for line in text.splitlines():
+    match = re.match(r'\s*0x[0-9a-fA-F]+\s+((?:[0-9a-fA-F]{8}(?:\s+|$)){1,4})', line)
+    if match:
+        words.extend(match.group(1).split())
+raw = bytes.fromhex(''.join(words))
+assert len(raw) >= 12, f'{so}: malformed .note.android.ident'
+namesz, descsz, note_type = struct.unpack_from('<III', raw, 0)
+off = 12
+name = raw[off:off + namesz].rstrip(b'\0')
+off = (off + namesz + 3) & ~3
+desc = raw[off:off + descsz]
+assert name == b'Android' and note_type == 1, (
+    f'{so}: unexpected Android note header name={name!r} type={note_type}'
+)
+assert len(desc) >= 132, f'{so}: Android note descriptor too short: {len(desc)}'
+api = struct.unpack_from('<I', desc, 0)[0]
+ndk = desc[4:68].split(b'\0', 1)[0].decode('ascii')
+build = desc[68:132].split(b'\0', 1)[0].decode('ascii')
+assert api == 24, f'{so}: expected Android API 24, got {api}'
+assert ndk == expected_ndk, f'{so}: expected NDK {expected_ndk}, got {ndk}'
+assert build == expected_build, f'{so}: expected NDK build {expected_build}, got {build}'
+print(f'{so}: Android API {api}, NDK {ndk} ({build})')
+PY
     echo "===== $name =====" >> /tmp/r08-renderer-parity-program-headers.txt
     readelf -lW "$so" >> /tmp/r08-renderer-parity-program-headers.txt
     python3 - "$so" <<'PY'
