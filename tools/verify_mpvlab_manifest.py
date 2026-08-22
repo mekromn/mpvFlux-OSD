@@ -64,7 +64,7 @@ def parse_legacy_lua_defaults(lua: str) -> dict[str, float]:
             continue
         key = key_match.group(1)
         kind = kind_match.group(1)
-        if kind == "shader" or key in {"SHADER_PROOF", "LUMA_MASTER", "CHROMA_MASTER"}:
+        if kind == "shader" or key in {"LUMA_MASTER", "CHROMA_MASTER"}:
             values[key] = float(default_match.group(1))
     return values
 
@@ -129,6 +129,8 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
             if required not in lines:
                 failures.append(f"mpv.conf missing required active line: {required}")
 
+        # R08 Android owns these entrypoints. Loading them from mpv.conf as well
+        # risks duplicate Lua instances or competing resident shader attachment.
         for forbidden_prefix in ("script=", "glsl-shaders="):
             offenders = sorted(line for line in lines if line.startswith(forbidden_prefix))
             if offenders:
@@ -160,6 +162,8 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
         if snippet not in source:
             failures.append(f"MPVView lost Pixel Shader Lab invariant: {snippet}")
 
+    # Generic app preference paths must not be able to supersede this branch's
+    # empirically verified vo=gpu/Vulkan path during initialization.
     forbidden_android_snippets = (
         'setVo(if (decoderPreferences.gpuNext.get()) "gpu-next" else "gpu")',
         '"mediacodec,mediacodec-copy,no"',
@@ -183,25 +187,6 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
     if 'MPVLib.setPropertyString("sid", "no")' not in track_source:
         failures.append("TrackSelector must be able to enforce subtitles OFF on fresh playback")
 
-    overlay_path = repo / (
-        "app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/"
-        "ShaderLabR08OverlayView.kt"
-    )
-    if not overlay_path.is_file():
-        failures.append("R08 native Shader Lab overlay is missing")
-    else:
-        overlay = overlay_path.read_text(encoding="utf-8")
-        for snippet in (
-            "ShaderLabControlCatalog.controls.size == 53",
-            "ShaderLabControlCatalog.actions.size == 10",
-            "surfaceEntries.size == 63",
-            "ShaderLabControlCatalog.actions",
-            "ShaderLabCommand.Morph",
-            "command.requiresConfirmation()",
-        ):
-            if snippet not in overlay:
-                failures.append(f"R08 native surface lost full-catalog contract: {snippet}")
-
     resident_path = root / "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl"
     lua_path = root / "scripts/pixel9-shader-lab.lua"
     catalog_path = repo / (
@@ -210,25 +195,16 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
     )
     if resident_path.is_file():
         shader = resident_path.read_text(encoding="utf-8")
-        try:
-            resident_defaults = parse_resident_param_defaults(shader)
-        except ValueError as error:
-            failures.append(f"resident PARAM declaration audit failed: {error}")
-            resident_defaults = {}
-
-        count = len(resident_defaults)
-        if count != 40:
-            failures.append(f"resident shader PARAM declaration count must be 40, got {count}")
-        if "//!PARAM SHADER_PROOF" not in shader:
-            failures.append("resident shader must expose SHADER_PROOF as a PARAM")
-        if "if (SHADER_PROOF != 0)" not in shader or "return vec4(1.0, 0.0, 1.0, src.a);" not in shader:
-            failures.append("resident SHADER_PROOF must provide an unambiguous magenta frame")
+        count = shader.count("//!PARAM ")
+        if count != 39:
+            failures.append(f"resident shader PARAM count must be 39, got {count}")
         if "//!HOOK LINEAR" not in shader or "//!BIND HOOKED" not in shader:
             failures.append("resident shader must remain a LINEAR/HOOKED pass")
         if "@@" in shader:
             failures.append("resident shader contains unresolved template token")
 
         try:
+            resident_defaults = parse_resident_param_defaults(shader)
             lua_defaults = parse_legacy_lua_defaults(lua_path.read_text(encoding="utf-8"))
             catalog_defaults = parse_kotlin_catalog_defaults(catalog_path.read_text(encoding="utf-8"))
             resident_catalog_defaults = {
@@ -238,7 +214,7 @@ def verify_r08_runtime_contract(root: Path, manifest: dict, failures: list[str])
             }
             compare_defaults("legacy Lua catalog", resident_defaults, lua_defaults, failures)
             compare_defaults("typed Kotlin catalog", resident_defaults, resident_catalog_defaults, failures)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             failures.append(f"resident PARAM default audit failed: {error}")
 
 

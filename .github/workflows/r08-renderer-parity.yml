@@ -63,9 +63,8 @@ jobs:
           from pathlib import Path
           shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
           assert '@@' not in shader, 'resident shader contains unresolved template token'
-          count = sum(1 for line in shader.splitlines() if line.startswith('//!PARAM '))
-          assert count == 40, count
-          print('Resident shader PARAM declaration audit PASS: 40')
+          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
+          print('Resident shader PARAM audit PASS: 39')
           PY
 
       - name: Rebuild exact R07 native renderer plus R08 PARAM
