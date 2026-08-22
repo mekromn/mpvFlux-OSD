@@ -11,6 +11,7 @@ import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.DecoderPreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
+import app.marlboroadvance.mpvex.repository.shaderlab.ShaderLabWorkspacePaths
 import app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge
 import app.marlboroadvance.mpvex.ui.player.PlayerActivity.Companion.TAG
 import app.marlboroadvance.mpvex.ui.player.controls.components.panels.toColorHexString
@@ -95,35 +96,67 @@ class MPVView(
   var aid: Int by TrackDelegate("aid")
 
   override fun initOptions() {
+    // R08 keeps all user-visible engine/config files under the canonical
+    // /storage/emulated/0/mpv workspace. The installer places mpv.conf and
+    // input.conf in its config/ subdirectory, so explicitly point libmpv there
+    // before mpv_initialize. This restores the config contract used by the
+    // known-good Shader Lab branch instead of silently relying on app defaults.
+    val shaderLabPaths = ShaderLabWorkspacePaths.canonical()
+    MPVLib.setOptionString("config", "yes")
+    MPVLib.setOptionString("config-dir", shaderLabPaths.config.absolutePath)
+    MPVLib.setOptionString("input-conf", shaderLabPaths.config.resolve("input.conf").absolutePath)
+
     shaderLabBridge.prepareForMpvInitialization()?.let { controllerPath ->
+      // Android owns the R08 controller entrypoint. mpv.conf deliberately does
+      // not declare the same script, preventing duplicate Lua instances.
       MPVLib.setOptionString("script", controllerPath)
     }
 
     val profile = decoderPreferences.profile.get()
     MPVLib.setOptionString("profile", profile)
-    setVo(if (decoderPreferences.gpuNext.get()) "gpu-next" else "gpu")
-    
-    // Set GPU API context (Vulkan or OpenGL)
-    if (decoderPreferences.useVulkan.get()) {
-      MPVLib.setOptionString("gpu-context", "androidvk")
-    }
 
-    // Set hwdec with fallback order: HW+ (mediacodec) -> HW (mediacodec-copy) -> SW (no)
+    // Pixel 9 Pro XL Shader Lab invariant: the empirically proven expanded
+    // brightness path is vo=gpu + Vulkan. Do not allow generic app GPU
+    // preferences to silently switch this specialized branch to gpu-next/OpenGL.
+    setVo("gpu")
+    MPVLib.setOptionString("gpu-context", "androidvk")
+    MPVLib.setOptionString("gpu-api", "vulkan")
+    MPVLib.setOptionString("fbo-format", "rgba16f")
+
+    // Match the V3.1 workstation quality path on a fresh install even before
+    // conditional SDR profile settings become active.
+    MPVLib.setOptionString("scale", "ewa_lanczossharp")
+    MPVLib.setOptionString("cscale", "ewa_lanczos")
+    MPVLib.setOptionString("dscale", "ewa_lanczos")
+    MPVLib.setOptionString("correct-downscaling", "yes")
+    MPVLib.setOptionString("sigmoid-upscaling", "yes")
+    MPVLib.setOptionString("linear-downscaling", "yes")
+    MPVLib.setOptionString("deband", "yes")
+    MPVLib.setOptionString("deband-iterations", "2")
+    MPVLib.setOptionString("deband-threshold", "24")
+    MPVLib.setOptionString("deband-range", "16")
+    MPVLib.setOptionString("deband-grain", "8")
+    MPVLib.setOptionString("dither", "fruit")
+    MPVLib.setOptionString("dither-depth", "auto")
+
+    // Keep mediacodec-copy first: this is the decoder path used while the
+    // Pixel brightness/image-quality behavior was established. Direct
+    // mediacodec remains a fallback, not the first choice.
     MPVLib.setOptionString(
       "hwdec",
-      if (decoderPreferences.tryHWDecoding.get()) "mediacodec,mediacodec-copy,no" else "no",
+      if (decoderPreferences.tryHWDecoding.get()) "mediacodec-copy,mediacodec,no" else "no",
     )
     MPVLib.setOptionString("hwdec-codecs", "all")
 
     if (decoderPreferences.useYUV420P.get()) {
       MPVLib.setOptionString("vf", "format=yuv420p")
     }
-    
+
     // Cap demuxer cache for mobile to prevent memory issues
     val cacheMegs = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) 64 else 32
     MPVLib.setOptionString("demuxer-max-bytes", "${cacheMegs * 1024 * 1024}")
     MPVLib.setOptionString("demuxer-max-back-bytes", "${cacheMegs * 1024 * 1024}")
-    
+
     val logLevel = if (advancedPreferences.verboseLogging.get()) "v" else "warn"
     MPVLib.setOptionString("msg-level", "all=$logLevel")
 
@@ -137,9 +170,13 @@ class MPVView(
     screenshotDir.mkdirs()
     MPVLib.setOptionString("screenshot-directory", screenshotDir.path)
 
-    VideoFilters.entries.forEach {
-      MPVLib.setOptionString(it.mpvProperty, it.preference(decoderPreferences).get().toString())
-    }
+    // V3.1 performs the luminance/chroma shaping. Keep mpv's conventional
+    // image controls neutral so the resident GLSL parameters are authoritative.
+    MPVLib.setOptionString("brightness", "0")
+    MPVLib.setOptionString("contrast", "0")
+    MPVLib.setOptionString("gamma", "0")
+    MPVLib.setOptionString("saturation", "0")
+    MPVLib.setOptionString("hue", "0")
 
     MPVLib.setOptionString("speed", playerPreferences.defaultSpeed.get().toString())
     MPVLib.setOptionString("vd-lavc-film-grain", "cpu")
@@ -238,7 +275,7 @@ class MPVView(
     MPVLib.setOptionString("audio-delay", (audioPreferences.defaultAudioDelay.get() / 1000.0).toString())
     MPVLib.setOptionString("audio-pitch-correction", audioPreferences.audioPitchCorrection.get().toString())
     MPVLib.setOptionString("volume-max", (audioPreferences.volumeBoostCap.get() + 100).toString())
-    
+
     // Volume normalization using dynamic audio normalization filter
     if (audioPreferences.volumeNormalization.get()) {
       MPVLib.setOptionString("af", "dynaudnorm")
@@ -247,8 +284,11 @@ class MPVView(
 
   // Setup
   private fun setupSubtitlesOptions() {
-    // Disable MPV's automatic subtitle selection
-    // App will handle track selection manually via TrackSelector to respect user choices
+    // Start with no selected subtitle tracks. sub-auto=no only disables
+    // external subtitle autoloading; sid=no is required to keep embedded
+    // subtitle tracks disabled by default as well.
+    MPVLib.setOptionString("sid", "no")
+    MPVLib.setOptionString("secondary-sid", "no")
     MPVLib.setOptionString("slang", "")
     MPVLib.setOptionString("sub-auto", "no")
     MPVLib.setOptionString("sub-file-paths", "")
@@ -256,7 +296,7 @@ class MPVView(
 
     val fontsDirPath = "${context.filesDir.path}/fonts/"
     MPVLib.setOptionString("sub-fonts-dir", fontsDirPath)
-    
+
     // Delay and speed for both primary and secondary
     val subDelay = (subtitlesPreferences.defaultSubDelay.get() / 1000.0).toString()
     val subSpeed = subtitlesPreferences.defaultSubSpeed.get().toString()
@@ -307,7 +347,7 @@ class MPVView(
     MPVLib.setOptionString("sub-shadow-offset", shadowOffset)
     MPVLib.setOptionString("sub-scale", subScale)
     MPVLib.setOptionString("sub-pos", subPos)
-    
+
     MPVLib.setOptionString("secondary-sub-font-size", fontSize)
     MPVLib.setOptionString("secondary-sub-bold", bold)
     MPVLib.setOptionString("secondary-sub-italic", italic)
