@@ -63,8 +63,10 @@ jobs:
           from pathlib import Path
           shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
           assert '@@' not in shader, 'resident shader contains unresolved template token'
-          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
-          print('Resident shader PARAM audit PASS: 39')
+          declarations = [line for line in shader.splitlines() if line.startswith('//!PARAM ')]
+          assert len(declarations) == 40, len(declarations)
+          assert declarations[0] == '//!PARAM R08_BYPASS', declarations[0]
+          print('Resident shader PARAM audit PASS: 39 public + 1 internal bypass')
           PY
 
       - name: Rebuild exact R07 native renderer plus R08 PARAM
@@ -102,7 +104,6 @@ jobs:
             cp -f "$PREFIX/$name" "$DEST/$name"
           done
 
-          # R07 did not package libxml2, and its libmpv/libavformat did not depend on it.
           rm -f "$DEST/libxml2.so"
           test ! -e "$DEST/libxml2.so"
 
@@ -268,6 +269,7 @@ jobs:
 
           sha256sum "$apk" | tee output/r08-parity/SHA256SUMS.txt
           cp /tmp/r08-renderer-parity-fingerprint.txt output/r08-parity/renderer-fingerprint.txt
+          grep -F 'r08_live_uniform_params=yes' output/r08-parity/renderer-fingerprint.txt
           cp /tmp/r08-renderer-parity-ffmpeg-config.txt output/r08-parity/native-ffmpeg-config.txt
           cp /tmp/r08-renderer-parity-android-ident.txt output/r08-parity/native-android-ident.txt
           cp /tmp/r08-parity-aar-needed.txt output/r08-parity/aar-needed.txt
