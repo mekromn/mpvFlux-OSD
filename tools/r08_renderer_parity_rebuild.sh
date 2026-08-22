@@ -68,7 +68,7 @@ s = s.replace(old, new, 1)
 
 anchor = '''grep -F '#define SHADER_MAX_PARAMS 64' deps/mpv/video/out/gpu/user_shaders.h\n'''
 assert s.count(anchor) == 1, s.count(anchor)
-audit = '''grep -F 'char *source_path;' deps/mpv/video/out/gpu/user_shaders.h\ngrep -F 'refresh_live_user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'm_config_cache_get_next_changed(p->opts_cache, &changed)' deps/mpv/video/out/gpu/video.c\ngrep -F 'changed == &cached->user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'R08 live user shader PARAM update' deps/mpv/video/out/gpu/video.c\ngrep -F -- '-Dshaderc=enabled' scripts/libplacebo.sh\ngrep -F -- '-Dglslang=disabled' scripts/libplacebo.sh\npkg_config_file="$prefix_dir/usr/local/lib/pkgconfig/shaderc.pc"\n'''
+audit = '''grep -F 'char *source_path;' deps/mpv/video/out/gpu/user_shaders.h\ngrep -F 'refresh_live_user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'm_config_cache_get_next_changed(p->opts_cache, &changed)' deps/mpv/video/out/gpu/video.c\ngrep -F 'changed == &cached->user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'R08 live user shader PARAM update' deps/mpv/video/out/gpu/video.c\ngrep -F -- '-Dshaderc=enabled' scripts/libplacebo.sh\ngrep -F -- '-Dglslang=disabled' scripts/libplacebo.sh\n'''
 s = s.replace(anchor, anchor + audit, 1)
 
 anchor = '''    echo "shader_max_params=64"\n'''
