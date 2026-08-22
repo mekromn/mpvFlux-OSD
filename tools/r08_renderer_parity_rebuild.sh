@@ -193,6 +193,16 @@ s = s.replace(anchor, vulkan_pc + anchor, 1)
 old = '-Diconv=disabled -Dlua=enabled \\\n'
 assert s.count(old) == 1, s.count(old)
 s = s.replace(old, '-Diconv=disabled -Dlua=enabled -Dvulkan=enabled \\\n', 1)
+# Preserve the exact accepted R07 mpv configuration fingerprint. Newer
+# Meson normalizes --default-library to the front of the embedded option
+# string; spelling it as -Ddefault_library=shared at the end preserves
+# identical build semantics and the accepted R07 metadata ordering.
+old = '\t--default-library shared \\\n'
+assert s.count(old) == 1, s.count(old)
+s = s.replace(old, '', 1)
+old = '\t-Dmanpage-build=disabled\n'
+assert s.count(old) == 1, s.count(old)
+s = s.replace(old, '\t-Dmanpage-build=disabled -Ddefault_library=shared\n', 1)
 p.write_text(s)
 PY
 
