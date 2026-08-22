@@ -16,7 +16,9 @@ class SubtitlesPreferences(
   preferenceStore: PreferenceStore,
 ) {
   val preferredLanguages = preferenceStore.getString("sub_preferred_languages")
-  val autoloadMatchingSubtitles = preferenceStore.getBoolean("sub_autoload_enabled", true)
+  // Shader Lab / Chrovelo starts with subtitles off, matching the known-good
+  // workstation. Users can explicitly opt into smart subtitle auto-selection.
+  val autoloadMatchingSubtitles = preferenceStore.getBoolean("sub_autoload_enabled", false)
 
   val fontsFolder = preferenceStore.getString("sub_fonts_folder")
   val font = preferenceStore.getString("sub_font", "")

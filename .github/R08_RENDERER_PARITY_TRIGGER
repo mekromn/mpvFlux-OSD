@@ -1,0 +1,2 @@
+R08 renderer parity rebuild required: exact R07 mpv/FFmpeg/libplacebo + Vulkan + resident PARAM backport.
+Fresh parity forensic retrigger 2026-08-21: run current agent/upstream-refactor workflow and capture first proven native blocker before changing renderer dependencies.

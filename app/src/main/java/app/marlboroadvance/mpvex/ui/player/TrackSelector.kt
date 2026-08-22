@@ -27,7 +27,9 @@ import kotlinx.coroutines.delay
  * ignored keywords.
  *
  * **Subtitle Selection Strategy (Highest to Lowest Priority):**
- * Subtitle selection is highly dependent on the auto-detected media context (Anime vs. Live-Action).
+ * Subtitle selection is disabled unless the user explicitly enables
+ * [SubtitlesPreferences.autoloadMatchingSubtitles]. When enabled, selection is highly
+ * dependent on the auto-detected media context (Anime vs. Live-Action).
  * - **Pass 00 (External Override):** Automatically prioritizes manually loaded external subtitle files.
  * - **Pass A0 (Anime Only - Native Default):** If exactly *one* subtitle track is flagged 
  * as default and it is Japanese, it is selected. This protects against muxing errors 
@@ -219,13 +221,24 @@ class TrackSelector(
     try {
       val currentSid = MPVLib.getPropertyInt("sid") ?: 0
 
-      // Respect manual "Subtitles Off" state
+      // Watch-later state is authoritative, including a manually saved OFF state.
       if (hasState && currentSid == 0) {
         Log.d(TAG, "Smart Sub: User disabled subtitles manually. Respecting choice.")
         return
       }
 
       if (hasState && currentSid > 0) return
+
+      // Fresh playback starts with subtitles OFF unless the user explicitly
+      // opted into smart autoload. This matches sid=no in the Shader Lab
+      // mpv.conf and prevents the app layer from undoing that default.
+      if (!subtitlesPreferences.autoloadMatchingSubtitles.get()) {
+        if (currentSid > 0) {
+          MPVLib.setPropertyString("sid", "no")
+        }
+        Log.d(TAG, "Smart Sub: Autoload disabled. Keeping subtitles OFF.")
+        return
+      }
 
       val isAnimeContext = detectAnimeContext(tracks)
       Log.d(TAG, "Smart Tracks: Context defined by Internal Auto-Detection -> $isAnimeContext")

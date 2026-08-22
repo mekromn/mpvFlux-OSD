@@ -1,0 +1,150 @@
+--------------------------------------
+User:
+
+
+I was forced start a new chat from this message
+Miner pass complete. I went against the actual R07 mpv cutoff (d54bad563, Feb 25 2026) instead of just searching “recent mpv,” which removed several false positives I mentioned earlier.
+
+The useful haul is smaller—and better—than the raw 706-commit range.
+
+Highest-value additions for our exact vo=gpu path
+
+1. c1a21bb8 — protect shader-hook component overwrites
+
+This is almost tailor-made for Shader Lab. If a custom hook tries to overwrite something like LUMA with more components than that target can support, mpv now rejects the hook instead of letting the bad configuration continue through the renderer. The patch is localized to vo_gpu/video.c.
+
+Verdict: TAKE. Low visual-risk, high robustness.
+
+2. 8d04be2b — correct Vulkan image-stride alignment
+
+This changes image allocation so stride is aligned to both the requested alignment and the actual bytes-per-pixel requirement. The upstream reason is specifically that Vulkan transfer sizes are expressed in texels.
+
+This is the kind of invisible correctness fix I like for the Pixel renderer: it shouldn't intentionally alter the image, but it removes a class of malformed transfer/layout situations.
+
+Verdict: TAKE, after renderer parity is restored.
+
+Shader Lab superpowers
+
+There is actually a second-stage PARAM stack upstream beyond the basic support we already backported.
+
+3. a0b62333 — DEFINE parameters
+
+A PARAM can become a GLSL preprocessor define usable inside #if branches.
+
+Very useful for things such as:
+
+diagnostic code on/off
+alternate algorithms
+clipping visualization
+expensive optional passes
+compile-time quality modes
+
+But I would not use DEFINE for rapidly adjusted controls. Changing a preprocessor define changes shader source and can require recompilation—the exact thing R08 is trying to eliminate from slider tuning.
+
+Verdict: TAKE eventually, but reserve for infrequent structural switches.
+
+4. 3e0729eb — ENUM parameters
+
+This is better for Shader Lab than I initially appreciated.
+
+Upstream adds named enumeration values and allows either int or DEFINE backing. Enumeration entries themselves become symbolic GLSL constants.
+
+That means we could define things conceptually like:
+
+GAMUT_MODE = PERCEPTUAL / CLIP / ADAPTIVE
+
+without Android needing to know magic numeric values.
+
+More importantly, an ENUM int can remain a runtime value rather than a compile-time structural switch.
+
+Verdict: TAKE. Very valuable.
+
+
+
+Chrovelo-R08-failure.zip
+
+Zip Archive
+
+No. I’m active, and there’s concrete progress:
+
+The FFmpeg/native blocker is fixed in ff68a3f5.
+
+Custom arm64 libmpv built successfully.
+
+vo=gpu PARAM support / 64-parameter patch passed.
+
+MPVLib wrapper compatibility passed.
+
+All arm64 ELF 16 KB alignment checks passed.
+
+The remaining Gradle failure was traced to one generated Kotlin scope error: luaStateSnapshot() was accidentally placed inside the companion object.
+
+I fixed that generator bug in 4d371c8e.
+
+The fresh R08 proof run has already passed the corrected finalizer, FFmpeg pin, and native patch stages again and is currently rebuilding libmpv.
+
+What is incomplete: the fresh run has not yet reached the Gradle/unit-test/APK packaging gate, so I cannot truthfully call the automated R08 proof complete yet. After that passes, the final R08 acceptance item is the Pixel 9 Pro XL device validation specified by the R08 contract.
+
+
+github-actions-artifact-9453153757.zip
+
+Zip Archive
+
+
+Chrovelo-R08-Pixel9ProXL-telemetry-arm64.zip
+
+Zip Archive
+
+We’re at the real R08 Pixel acceptance step now.
+
+The resident implementation is integrated on agent/upstream-refactor at a8081226 (“R08 integrate resident libmpv and Lua state sync”), including the resident vo=gpu PARAM transport and startup state-adoption fix. The R08 contract explicitly requires real Pixel 9 Pro XL testing before R08 can be marked DONE and R09 can begin.
+
+I also added the missing R08 device telemetry and enabled it in production at commit 3dad9930. The telemetry-enabled phone workflow passed the full Shader Lab unit suite, APK build, signing, package/version verification, and artifact upload.
+
+Install this exact APK
+
+Chrovelo R08 Device Test — Pixel 9 Pro XL
+
+APK SHA-256:
+
+57e4dab1e56f01ee3b48162b45599fd9a6d1adb078ba4ead08cab4b7cb4358ce
+
+Test
+
+Use a normal SDR video where the Pixel expanded-brightness effect is obvious.
+
+Open Shader Lab and adjust a genuine shader parameter such as LUMA_CONTRAST several times. Make at least two changes and verify that the picture reacts immediately. Then stop touching the control for a second.
+
+Also tell me:
+
+Does the expanded-brightness vo=gpu behavior still work?
+
+Do shader-control changes visibly update immediately?
+
+Any blue screen, flash, hitch, shader reload, or other visual glitch?
+
+Does the final slider position match what remains visible after you stop adjusting?
+
+Then send me this file:
+
+/storage/emulated/0/mpv/logs/shaderlab-r08-resident-proof.txt
+
+The new proof records exact glsl-shader-opts readback, command/readback latency, resident-shader attachment, whether the resident shader file stayed unchanged, whether any shader-list mutation occurred during tuning, frame/drop/timing counters, and Pixel thermal status.
+
+A successful run should end with:
+
+status=PASS
+
+After that, we’ll do the short HDR-protection check. If both pass, I can formally close R08 and advance the roadmap to R09.
+
+
+￼
+
+App never gets past splash screen in latest
+
+
+Chrovelo-R08-Pixel9ProXL-runtime-repair-arm64.zip
+
+Zip Archive
+
+Yes — I found a definite native packaging defect that explains the splash hang.

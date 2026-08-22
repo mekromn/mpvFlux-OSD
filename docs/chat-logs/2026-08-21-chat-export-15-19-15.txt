@@ -1,0 +1,551 @@
+--------------------------------------
+User:
+
+
+I was forced start a new chat from this message
+Miner pass complete. I went against the actual R07 mpv cutoff (d54bad563, Feb 25 2026) instead of just searching “recent mpv,” which removed several false positives I mentioned earlier.
+
+The useful haul is smaller—and better—than the raw 706-commit range.
+
+Highest-value additions for our exact vo=gpu path
+
+1. c1a21bb8 — protect shader-hook component overwrites
+
+This is almost tailor-made for Shader Lab. If a custom hook tries to overwrite something like LUMA with more components than that target can support, mpv now rejects the hook instead of letting the bad configuration continue through the renderer. The patch is localized to vo_gpu/video.c.
+
+Verdict: TAKE. Low visual-risk, high robustness.
+
+2. 8d04be2b — correct Vulkan image-stride alignment
+
+This changes image allocation so stride is aligned to both the requested alignment and the actual bytes-per-pixel requirement. The upstream reason is specifically that Vulkan transfer sizes are expressed in texels.
+
+This is the kind of invisible correctness fix I like for the Pixel renderer: it shouldn't intentionally alter the image, but it removes a class of malformed transfer/layout situations.
+
+Verdict: TAKE, after renderer parity is restored.
+
+Shader Lab superpowers
+
+There is actually a second-stage PARAM stack upstream beyond the basic support we already backported.
+
+3. a0b62333 — DEFINE parameters
+
+A PARAM can become a GLSL preprocessor define usable inside #if branches.
+
+Very useful for things such as:
+
+diagnostic code on/off
+alternate algorithms
+clipping visualization
+expensive optional passes
+compile-time quality modes
+
+But I would not use DEFINE for rapidly adjusted controls. Changing a preprocessor define changes shader source and can require recompilation—the exact thing R08 is trying to eliminate from slider tuning.
+
+Verdict: TAKE eventually, but reserve for infrequent structural switches.
+
+4. 3e0729eb — ENUM parameters
+
+This is better for Shader Lab than I initially appreciated.
+
+Upstream adds named enumeration values and allows either int or DEFINE backing. Enumeration entries themselves become symbolic GLSL constants.
+
+That means we could define things conceptually like:
+
+GAMUT_MODE = PERCEPTUAL / CLIP / ADAPTIVE
+
+without Android needing to know magic numeric values.
+
+More importantly, an ENUM int can remain a runtime value rather than a compile-time structural switch.
+
+Verdict: TAKE. Very valuable.
+
+
+
+Chrovelo-R08-failure.zip
+
+Zip Archive
+
+No. I’m active, and there’s concrete progress:
+
+The FFmpeg/native blocker is fixed in ff68a3f5.
+
+Custom arm64 libmpv built successfully.
+
+vo=gpu PARAM support / 64-parameter patch passed.
+
+MPVLib wrapper compatibility passed.
+
+All arm64 ELF 16 KB alignment checks passed.
+
+The remaining Gradle failure was traced to one generated Kotlin scope error: luaStateSnapshot() was accidentally placed inside the companion object.
+
+I fixed that generator bug in 4d371c8e.
+
+The fresh R08 proof run has already passed the corrected finalizer, FFmpeg pin, and native patch stages again and is currently rebuilding libmpv.
+
+What is incomplete: the fresh run has not yet reached the Gradle/unit-test/APK packaging gate, so I cannot truthfully call the automated R08 proof complete yet. After that passes, the final R08 acceptance item is the Pixel 9 Pro XL device validation specified by the R08 contract.
+
+
+github-actions-artifact-9453153757.zip
+
+Zip Archive
+
+
+Chrovelo-R08-Pixel9ProXL-telemetry-arm64.zip
+
+Zip Archive
+
+We’re at the real R08 Pixel acceptance step now.
+
+The resident implementation is integrated on agent/upstream-refactor at a8081226 (“R08 integrate resident libmpv and Lua state sync”), including the resident vo=gpu PARAM transport and startup state-adoption fix. The R08 contract explicitly requires real Pixel 9 Pro XL testing before R08 can be marked DONE and R09 can begin.
+
+I also added the missing R08 device telemetry and enabled it in production at commit 3dad9930. The telemetry-enabled phone workflow passed the full Shader Lab unit suite, APK build, signing, package/version verification, and artifact upload.
+
+Install this exact APK
+
+Chrovelo R08 Device Test — Pixel 9 Pro XL
+
+APK SHA-256:
+
+57e4dab1e56f01ee3b48162b45599fd9a6d1adb078ba4ead08cab4b7cb4358ce
+
+Test
+
+Use a normal SDR video where the Pixel expanded-brightness effect is obvious.
+
+Open Shader Lab and adjust a genuine shader parameter such as LUMA_CONTRAST several times. Make at least two changes and verify that the picture reacts immediately. Then stop touching the control for a second.
+
+Also tell me:
+
+Does the expanded-brightness vo=gpu behavior still work?
+
+Do shader-control changes visibly update immediately?
+
+Any blue screen, flash, hitch, shader reload, or other visual glitch?
+
+Does the final slider position match what remains visible after you stop adjusting?
+
+Then send me this file:
+
+/storage/emulated/0/mpv/logs/shaderlab-r08-resident-proof.txt
+
+The new proof records exact glsl-shader-opts readback, command/readback latency, resident-shader attachment, whether the resident shader file stayed unchanged, whether any shader-list mutation occurred during tuning, frame/drop/timing counters, and Pixel thermal status.
+
+A successful run should end with:
+
+status=PASS
+
+After that, we’ll do the short HDR-protection check. If both pass, I can formally close R08 and advance the roadmap to R09.
+
+
+￼
+
+App never gets past splash screen in latest
+
+
+Chrovelo-R08-Pixel9ProXL-runtime-repair-arm64.zip
+
+Zip Archive
+
+Yes — I found a definite native packaging defect that explains the splash hang.
+
+The custom R08 libmpv.so requires:
+
+libxml2.so
+
+but the broken APK did not contain libxml2.so. Android therefore could not satisfy the native dependency graph during startup. I rebuilt the exact matching libxml2 2.15.2 from the pinned R08 native harness and packaged it with the AAR. The repaired AAR is committed at 5050fcf7.
+
+The fresh phone build then passed the full unit suite, persistent signing, APK assembly, package/version verification, and certificate verification. I also inspected the final APK directly: it contains both libmpv.so and libxml2.so, and libmpv.so's DT_NEEDED: libxml2.so is now actually satisfied.
+
+Install this corrected build
+
+Download Chrovelo R08 Runtime Repair — Pixel 9 Pro XL
+
+SHA-256:
+
+0c7d078c07ce6f31c8bb78028dde2998a7aaa957e2043cfb45a5bd062a491748
+
+For the moment, just test whether this one gets past the splash screen and opens normally. If it does, play the same SDR video and we’ll immediately continue the R08 resident-parameter validation from there.
+
+I also temporarily suspended the automatic R08 native-proof retrigger while we validate this runtime repair, so we won't accidentally churn the branch while testing.
+
+
+Yes—there is worthwhile upstream code we can use, but I would not upgrade the whole stack. Your “lower fidelity” observation just proved why. We should first reproduce the exact R07 renderer, then cherry-pick narrowly.
+
+The strongest candidates I found are:
+
+c1a21bb8 — vo_gpu invalid component overwrite protection. Good robustness fix for custom shaders. Very attractive because it fixes malformed hook/component cases without changing intended rendering.
+
+7d1a598b — vo_gpu PARAMs inside RPN expressions. This is especially valuable for Shader Lab. Parameters could drive conditional shader logic directly instead of us having to encode every behavior in Kotlin/Lua.
+
+3e0729eb — ENUM shader parameters and a0b62333 — DEFINE parameters. These could eventually give us proper discrete modes/toggles—quality modes, algorithms, clipping displays, gamut strategies—inside one resident shader rather than separate shader variants.
+
+11b2004b — scaling-option inheritance fix. mpv could silently ignore certain cscale-*/dscale-* overrides when kernels were inherited from scale. Since image fidelity is a major goal, I want this audited against our Pixel scaling configuration.
+
+702abfd5 — use actual Vulkan texture dimensions. Fixes texture-size mismatches that can cause glitches with polar scalers. Potentially useful for a Vulkan-quality path, although I’d test relevance carefully with mediacodec-copy.
+
+7eb1ef2f — resizable filter windows / proper tscale-radius. Worth having if we later optimize motion/interpolation quality.
+
+There are also newer libplacebo Vulkan synchronization, texture-transfer, swapchain-format, and memory fixes from 2026. Some are genuinely excellent, but I would hold those for a separate renderer-upgrade experiment, because moving from R07’s v7.360.0-3-gc93aa134 to a newer libplacebo already changed the picture perceptibly.
+
+And we found something particularly important about the harness: its current libplacebo.sh literally builds with -Dvulkan=disabled. That is exactly the kind of upstream-build difference we must eliminate before evaluating any visual changes.
+
+So my order would be:
+
+Restore exact R07 visual renderer parity — mpv baseline, libplacebo c93aa134, Vulkan, FFmpeg, scaling path.
+
+Keep our R08 PARAM backport.
+
+Add the low-risk vo_gpu improvements above one at a time.
+
+Establish a Pixel renderer fingerprint CI gate so a dependency version, Vulkan feature, swapchain format, or native library cannot silently drift again.
+
+Only afterward create an experimental “newer libplacebo” branch and A/B it visually against the locked reference.
+
+I’d especially like to bring RPN PARAMs + ENUM + DEFINE into Shader Lab eventually. Those three upstream features fit what we’re building extremely well and could make the resident architecture considerably more powerful without going back to shader rewrites.
+
+
+Any others?
+
+
+Yes. After filtering out commits that are already inside the R07 d54bad563 baseline, there are several more genuinely new candidates.
+
+The ones I’d put near the top are:
+
+11b2004b — fix inherited scaler-option handling. This is especially relevant because we explicitly use separate scale, cscale, and dscale settings. It prevents some scaler sub-options from being silently ignored.
+
+702abfd5 — vo_gpu uses actual Vulkan texture dimensions. Fixes cases where a nominal 1080-line frame is physically 1088 lines, for example. Particularly relevant to polar/EWA scaling and avoiding subtle sampling/glitch problems.
+
+c1a21bb8 — reject invalid shader component overwrites. Excellent defensive improvement for a Shader Lab where shaders are dynamically parameterized.
+
+7d1a598b — PARAMs usable in shader RPN expressions. This could make the resident shader considerably smarter: parameters could control WHEN, dimensions, conditional stages, etc.
+
+3e0729eb + a0b62333 — ENUM and DEFINE PARAM types. These are very attractive for future quality-mode selectors, gamut algorithms, diagnostic overlays, clipping modes, and boolean feature switches without shader-file swapping.
+
+7eb1ef2f — proper resizable filter windows / tscale-radius. Not immediately necessary, but valuable if we later expose motion scaling/interpolation tuning.
+
+7f72f64b — VO declares total referenced-frame requirements. This is primarily aimed at frame queues/hardware surface pools. It may eventually improve reliability with hardware decoding, although it matters more to gpu-next than our current path.
+
+There are also some libplacebo fixes newer than our exact R07 c93aa134 baseline that I would consider backporting individually instead of upgrading libplacebo wholesale:
+
+3dd24a5 — fixes Vulkan texture transfers when an offset is used.
+
+65054fab — verifies that a requested Vulkan image-layout transition is actually supported.
+
+464d6eab + d4624cb — Vulkan synchronization/layout-transition correctness fixes, including a write-after-write hazard.
+
+f644b2ed — avoids trying unusable Vulkan memory types for certain image formats.
+
+738ed4e — avoids a raster/compute layout transition that has been observed to corrupt pixels on some Vulkan drivers. This one is particularly interesting for Shader Lab because we use GPU shader passes, but I would classify it as test carefully, since it changes how storage-capable render targets are laid out.
+
+0d1bded + 8c5b8d2 — newer Vulkan queue handling (vkGetDeviceQueue2 and queue flags). More of a future-proofing/stability improvement than an image-quality feature.
+
+One more area I think is worth building ourselves from upstream concepts: runtime renderer introspection. We should expose/log the actual active values for GPU API, Vulkan device, swapchain format/bit depth, FBO format, decoded pixel format, scaler kernels, libplacebo/mpv versions, shader list, and PARAM state. That would have caught the missing-Vulkan R08 build immediately instead of us discovering it visually.
+
+So I’d now define three buckets:
+
+R08 parity-critical: exact R07 libplacebo c93aa134, Vulkan enabled, exact FFmpeg/mpv baseline, plus PARAM support.
+
+Safe-ish backports: 11b2004b, 702abfd5, c1a21bb8, RPN/ENUM/DEFINE PARAM support.
+
+Experimental renderer enhancements: newer libplacebo Vulkan synchronization/memory/layout fixes, each A/B tested individually.
+
+And there are probably still more. The next place I’d mine is mpv’s 2026 vo_gpu commit history specifically between d54bad563 and current HEAD, rather than broad keyword searches. That should give us essentially the complete list of changes applicable to our exact renderer path.
+
+
+Ok do it miner
+
+
+Miner pass complete. I went against the actual R07 mpv cutoff (d54bad563, Feb 25 2026) instead of just searching “recent mpv,” which removed several false positives I mentioned earlier.
+
+The useful haul is smaller—and better—than the raw 706-commit range.
+
+Highest-value additions for our exact vo=gpu path
+
+1. c1a21bb8 — protect shader-hook component overwrites
+
+This is almost tailor-made for Shader Lab. If a custom hook tries to overwrite something like LUMA with more components than that target can support, mpv now rejects the hook instead of letting the bad configuration continue through the renderer. The patch is localized to vo_gpu/video.c.
+
+Verdict: TAKE. Low visual-risk, high robustness.
+
+2. 8d04be2b — correct Vulkan image-stride alignment
+
+This changes image allocation so stride is aligned to both the requested alignment and the actual bytes-per-pixel requirement. The upstream reason is specifically that Vulkan transfer sizes are expressed in texels.
+
+This is the kind of invisible correctness fix I like for the Pixel renderer: it shouldn't intentionally alter the image, but it removes a class of malformed transfer/layout situations.
+
+Verdict: TAKE, after renderer parity is restored.
+
+Shader Lab superpowers
+
+There is actually a second-stage PARAM stack upstream beyond the basic support we already backported.
+
+3. a0b62333 — DEFINE parameters
+
+A PARAM can become a GLSL preprocessor define usable inside #if branches.
+
+Very useful for things such as:
+
+diagnostic code on/off
+
+alternate algorithms
+
+clipping visualization
+
+expensive optional passes
+
+compile-time quality modes
+
+But I would not use DEFINE for rapidly adjusted controls. Changing a preprocessor define changes shader source and can require recompilation—the exact thing R08 is trying to eliminate from slider tuning.
+
+Verdict: TAKE eventually, but reserve for infrequent structural switches.
+
+4. 3e0729eb — ENUM parameters
+
+This is better for Shader Lab than I initially appreciated.
+
+Upstream adds named enumeration values and allows either int or DEFINE backing. Enumeration entries themselves become symbolic GLSL constants.
+
+That means we could define things conceptually like:
+
+GAMUT_MODE = PERCEPTUAL / CLIP / ADAPTIVE
+
+without Android needing to know magic numeric values.
+
+More importantly, an ENUM int can remain a runtime value rather than a compile-time structural switch.
+
+Verdict: TAKE. Very valuable.
+
+5. 7d1a598b — PARAM values inside RPN expressions
+
+This may be the most powerful Shader Lab improvement after basic resident PARAM support.
+
+Upstream extends WHEN, WIDTH and HEIGHT expression evaluation so shader parameters—and ENUM members—can participate directly. It specifically removes the old vo=gpu limitation that parameters couldn't be referenced in WHEN.
+
+That gives us resident conditional execution such as:
+
+run expensive gamut diagnostics only when enabled
+
+skip an entire processing stage at neutral/default value
+
+parameter-controlled processing topology
+
+selectable algorithms without loading another shader
+
+eventually make sections of V3.1 self-disabling when mathematically unnecessary
+
+And most importantly, WHEN can prevent a pass from executing, rather than merely multiply its result by zero.
+
+Verdict: DEFINITELY TAKE.
+
+The clean PARAM capability chain should ultimately be approximately:
+
+91ceffce helper → 0d655fe basic PARAM → a0b62333 DEFINE → 3e0729eb ENUM → supporting auto-param work → 7d1a598b RPN PARAM.
+
+We already have the first two.
+
+Vulkan/libplacebo gold
+
+These are newer than our R07 c93aa134 libplacebo baseline. I would not upgrade libplacebo wholesale to obtain them—we already learned what that can do to fidelity. Instead, investigate surgical backports onto c93aa134.
+
+6. 738ed4e — prevent raster/compute image-layout corruption
+
+This one got my attention.
+
+Upstream reports that when an image written by a compute-storage operation is subsequently used by a raster pass, some Vulkan drivers can corrupt pixels during the transition from GENERAL to COLOR_ATTACHMENT_OPTIMAL.
+
+The fix keeps storage-capable render targets in VK_IMAGE_LAYOUT_GENERAL. Upstream explicitly notes that this avoids corruption and that modern/mobile GPUs should tolerate the approach well.
+
+Our pipeline is unusually relevant because we're doing custom shader processing on a Pixel Vulkan renderer.
+
+Verdict: HIGH-PRIORITY EXPERIMENT. Pixel A/B required.
+
+I would not silently fold this into the reference renderer, but I absolutely want a test APK containing only this change after R07 parity.
+
+7. 65054fab — validate Vulkan layout transitions
+
+Before attempting host-image layout transitions, libplacebo now checks whether the current layout is actually in the supported transition set.
+
+Verdict: strong correctness candidate.
+
+8. f644b2ed — don't request impossible Vulkan memory types
+
+VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT can make a format have zero valid memory types on some implementations. This patch probes the requirements first and uses host transfer only when the resulting image remains allocatable.
+
+This isn't sexy, but it is exactly the kind of driver-specific robustness that matters on Android.
+
+Verdict: strong candidate, dependency compatibility permitting.
+
+9. 464d6eab + d4624cb — Vulkan synchronization fixes
+
+The first fixes an invalid access mask during pure layout transitions.
+
+Then upstream found an additional write-after-write hazard and refined the solution so the write access bit is added specifically for write transitions.
+
+These should be treated as a pair/sequence—not cherry-pick the first and stop there.
+
+Verdict: promising stability backports, but test as a coherent dependency chain.
+
+Motion / frame timing
+
+10. 68b1d10d — rewritten display-sync audio drift controller
+
+This one is substantial.
+
+The old display-sync controller could overshoot and effectively fight its own compensation. Upstream replaced it with:
+
+low-pass-filtered A/V error
+proportional correction
+gradual exponential recovery
+adaptive slew limits
+
+The goal is convergence to steady sync rather than oscillating audio-speed corrections.
+
+This won't increase spatial fidelity, but it may improve perceived motion smoothness and playback steadiness, particularly on high-refresh displays.
+
+Verdict: keep for a dedicated motion/audio A/B after R08.
+
+I would not mix it into the renderer-parity build.
+
+Things the mine disproved
+
+There are no meaningful post-R07 MediaCodec-copy improvements for us to grab. The newest MediaCodec-specific commits surfaced by the history search predate our Feb 25 baseline.
+
+Likewise, there is essentially no new Android-specific vo=gpu renderer patch after our R07 base.
+
+And I found no compelling new post-R07 vo=gpu dithering fix.
+
+That's useful information: we're not missing some giant Android patch series. The main opportunities are generic vo_gpu, PARAM, image-layout and Vulkan correctness improvements.
+
+What I would build
+
+Our future native stack should look like this:
+
+Reference core
+
+mpv d54bad563
+FFmpeg 5ba2525c7a
+libplacebo c93aa134
+Vulkan enabled exactly like R07
+
+Then layer only:
+
+R08 required
+91ceffce → 0d655fe → 64-PARAM ceiling
+
+Safe-upstream pack
+c1a21bb8 + 8d04be2b
+
+Shader Lab Advanced PARAM pack
+a0b62333 + 3e0729eb + dependencies + 7d1a598b
+
+Then separately make experimental Pixel APKs for the selected libplacebo Vulkan fixes—one logical patch family at a time.
+
+The most important immediate task is still restoring exact R07 Vulkan + libplacebo renderer parity. Once that's visually identical again, we will finally have a trustworthy reference against which these mined improvements can be measured instead of confusing “new code” with “better image.”
+
+
+Show more
+--------------------------------------
+ChatGPT:
+
+
+Yes. I have the correct handoff now, and I’m not going back to the earlier R07/debugging state.
+
+We are on agent/upstream-refactor, R08 is still IN_PROGRESS, and the roadmap explicitly keeps us on R08 until the resident vo=gpu parameter architecture passes the real Pixel acceptance gates. The runtime-loader repair at 5050fcf7 is also present on the branch and specifically packages the missing libxml2.so.
+
+I re-read the branch README, roadmap, progress record, R08 architecture, and AGENTS.md. The immediate-upstream check is also clean: Muhammedahmed18/mpvFlux is still at f2ed0153, so there is no upstream app-source update we need to integrate first.
+
+More importantly, I continued the renderer-parity investigation and confirmed the problem with hard evidence.
+
+The actual uploaded R07 APK fingerprints as:
+
+mpv:
+v0.41.0-224-gd54bad563
+
+
+FFmpeg:
+N-122998-g5ba2525c7a
+
+
+libplacebo:
+v7.360.0 (v7.360.0-3-gc93aa134)
+
+
+mpv build configuration:
+-Dvulkan=enabled
+
+
+enabled features include:
+vulkan
+
+Its libmpv.so also directly requires:
+
+libvulkan.so
+
+So R07 unquestionably had the Vulkan-capable renderer we are trying to preserve.
+
+And I confirmed the R08 build defect directly in the exact pinned Secozzi harness at fd17fb02...:
+
+Bash
+meson setup $build --cross-file "$prefix_dir"/crossfile.txt \
+    -Dvulkan=disabled -Ddemos=false
+
+That is literally how its libplacebo.sh builds libplacebo.
+
+Even worse for reproducibility, that harness normally shallow-clones current libplacebo HEAD, rather than pinning our R07 renderer revision.
+
+So we now have a precise explanation for why an R08 custom libmpv could pass PARAM tests, Gradle, ELF alignment, signing, and even runtime loading while still looking different from R07.
+
+The R08 repair target is now exact
+
+We need to rebuild the resident-PARAM libmpv with:
+
+mpv        d54bad5636924ab3f39cb6e397b94b6aa8a7c433
+FFmpeg     5ba2525c7affc29cbd99e6266946b382d3fffe8b
+libplacebo c93aa134ab62365ce1177efff99b8e1e66a818e7
+
+
+Vulkan     ENABLED
+vo         gpu
+PARAM      91ceffce -> 0d655fe
+PARAM max  64
+
+I resolved the full libplacebo SHA too: c93aa134ab62365ce1177efff99b8e1e66a818e7.
+
+And we do not add the mined upgrades yet—no c1a21bb8, 8d04be2b, RPN, ENUM, DEFINE, or newer libplacebo Vulkan fixes. First we make R08 effectively “R07 renderer + resident PARAM capability”. Only after the Pixel says the picture is identical do we have a trustworthy baseline for those improvements.
+
+So yes: I’m exactly back where we left off. The miner is finished; renderer parity is the active R08 task.
+--------------------------------------
+ChatGPT:
+
+
+We reached the real native parity gate and it failed specifically during the exact R07 Vulkan renderer rebuild. Everything before that passed: checkout, dependency setup, the resident shader audit, and the 39-PARAM source validation.
+
+The normal Chrovelo arm64/universal jobs succeeded and uploaded artifacts, but there is no R08 parity proof artifact, which confirms the parity job never reached AAR/APK packaging.
+
+I’m not giving you the normal arm64 APK because it is not the renderer-parity build we need to test. The correct next move is to fix the native build failure while keeping these frozen:
+
+mpv        d54bad563 + PARAM backports
+FFmpeg     5ba2525c7a
+libplacebo c93aa134
+vo          gpu
+Vulkan      enabled
+PARAM max   64
+
+Most importantly, I’m not advancing R08 and I’m not substituting a newer renderer just to make it compile. The exact R07 renderer remains the target.
+--------------------------------------
+User:
+
+
+Ok
+--------------------------------------
+ChatGPT:
+
+
+Continuing R08 from the failed native parity build. The next concrete target is the uploaded failure-diagnostics artifact from job 96881103884; once its native-build.log is recovered, the fix will be limited to the first proven native build blocker while preserving the exact R07 renderer revisions and Vulkan path.
+--------------------------------------
+User:
+
+
+OK
+--------------------------------------

@@ -9,15 +9,32 @@ plugins {
   alias(libs.plugins.room)
 }
 
+val chroveloVersionCode =
+  providers.gradleProperty("chroveloVersionCode").orNull?.toIntOrNull() ?: 112
+
+val persistentSigningKeystorePath = System.getenv("CHROVELO_SIGNING_KEYSTORE_PATH")
+val persistentSigningKeyAlias = System.getenv("CHROVELO_SIGNING_KEY_ALIAS")
+val persistentSigningStorePassword = System.getenv("CHROVELO_SIGNING_STORE_PASSWORD")
+val persistentSigningKeyPassword = System.getenv("CHROVELO_SIGNING_KEY_PASSWORD")
+val hasPersistentSigning =
+  listOf(
+    persistentSigningKeystorePath,
+    persistentSigningKeyAlias,
+    persistentSigningStorePassword,
+    persistentSigningKeyPassword,
+  ).all { !it.isNullOrBlank() }
+
 android {
+  // Keep the upstream Kotlin/Android namespace stable during the refactor.
+  // applicationId is the user-visible install/update identity and is intentionally independent.
   namespace = "app.marlboroadvance.mpvex"
   compileSdk = 36
 
   defaultConfig {
-    applicationId = "app.marlboroadvance.mpvex"
+    applicationId = "io.github.mekromn.chrovelo"
     minSdk = 26
     targetSdk = 36
-    versionCode = 112
+    versionCode = chroveloVersionCode
     versionName = "1.1.2"
 
     vectorDrawables {
@@ -70,6 +87,19 @@ android {
     }
   }
 
+  // CI injects the existing repository signing identity from GitHub Secrets.
+  // No reusable keystore/private key is stored in Git history.
+  signingConfigs {
+    if (hasPersistentSigning) {
+      create("chroveloPersistent") {
+        storeFile = file(persistentSigningKeystorePath!!)
+        storePassword = persistentSigningStorePassword
+        keyAlias = persistentSigningKeyAlias
+        keyPassword = persistentSigningKeyPassword
+      }
+    }
+  }
+
   buildTypes {
     named("release") {
       isMinifyEnabled = true
@@ -93,6 +123,9 @@ android {
     named("debug") {
       applicationIdSuffix = ".debug"
       versionNameSuffix = "-${getCommitCount()}"
+      if (hasPersistentSigning) {
+        signingConfig = signingConfigs.getByName("chroveloPersistent")
+      }
     }
   }
 
@@ -220,6 +253,8 @@ dependencies {
   implementation(libs.nanohttpd)
   implementation(libs.lazycolumnscrollbar)
   implementation(libs.reorderable)
+
+  testImplementation("junit:junit:4.13.2")
 }
 
 /* ---------------- Git helpers ---------------- */
