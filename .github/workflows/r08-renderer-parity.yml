@@ -220,9 +220,46 @@ jobs:
           grep -F -- "--enable-muxer='mov,matroska,mpegts'" output/r08-parity/ffmpeg-config.txt
           ! grep -Fq -- '--enable-libxml2' output/r08-parity/ffmpeg-config.txt
 
+          : > output/r08-parity/android-ident.txt
           for name in libmpv.so libavcodec.so libavdevice.so libavfilter.so libavformat.so libavutil.so libswresample.so libswscale.so; do
-            file "$root/$name" | grep -F 'for Android 24'
-            file "$root/$name" | grep -F 'built by NDK r29 (14206865)'
+            so="$root/$name"
+            file "$so" | tee -a output/r08-parity/android-ident.txt
+            python3 - "$so" <<'PY'
+          import re
+          import struct
+          import subprocess
+          import sys
+
+          so = sys.argv[1]
+          text = subprocess.check_output(
+              ['readelf', '-x', '.note.android.ident', so],
+              text=True,
+              stderr=subprocess.STDOUT,
+          )
+          words = []
+          for line in text.splitlines():
+              match = re.match(r'\s*0x[0-9a-fA-F]+\s+((?:[0-9a-fA-F]{8}(?:\s+|$)){1,4})', line)
+              if match:
+                  words.extend(match.group(1).split())
+          raw = bytes.fromhex(''.join(words))
+          assert len(raw) >= 12, f'{so}: malformed .note.android.ident'
+          namesz, descsz, note_type = struct.unpack_from('<III', raw, 0)
+          off = 12
+          name = raw[off:off + namesz].rstrip(b'\0')
+          off = (off + namesz + 3) & ~3
+          desc = raw[off:off + descsz]
+          assert name == b'Android' and note_type == 1, (
+              f'{so}: unexpected Android note header name={name!r} type={note_type}'
+          )
+          assert len(desc) >= 132, f'{so}: Android note descriptor too short: {len(desc)}'
+          api = struct.unpack_from('<I', desc, 0)[0]
+          ndk = desc[4:68].split(b'\0', 1)[0].decode('ascii')
+          build = desc[68:132].split(b'\0', 1)[0].decode('ascii')
+          assert api == 24, f'{so}: expected Android API 24, got {api}'
+          assert ndk == 'r29', f'{so}: expected NDK r29, got {ndk}'
+          assert build == '14206865', f'{so}: expected NDK build 14206865, got {build}'
+          print(f'{so}: Android API {api}, NDK {ndk} ({build})')
+          PY
           done
 
           apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
@@ -232,6 +269,7 @@ jobs:
           sha256sum "$apk" | tee output/r08-parity/SHA256SUMS.txt
           cp /tmp/r08-renderer-parity-fingerprint.txt output/r08-parity/renderer-fingerprint.txt
           cp /tmp/r08-renderer-parity-ffmpeg-config.txt output/r08-parity/native-ffmpeg-config.txt
+          cp /tmp/r08-renderer-parity-android-ident.txt output/r08-parity/native-android-ident.txt
           cp /tmp/r08-parity-aar-needed.txt output/r08-parity/aar-needed.txt
           cp /tmp/r08-renderer-parity-dynamic.txt output/r08-parity/libmpv-dynamic.txt
           cp /tmp/r08-renderer-parity-program-headers.txt output/r08-parity/native-program-headers.txt
@@ -256,6 +294,7 @@ jobs:
           cp /tmp/r08-renderer-parity-gradle-build.log r08-failure/ 2>/dev/null || true
           cp /tmp/r08-renderer-parity-fingerprint.txt r08-failure/ 2>/dev/null || true
           cp /tmp/r08-renderer-parity-ffmpeg-config.txt r08-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-android-ident.txt r08-failure/ 2>/dev/null || true
           cp /tmp/r08-renderer-parity-dynamic.txt r08-failure/ 2>/dev/null || true
           cp /tmp/r08-renderer-parity-program-headers.txt r08-failure/ 2>/dev/null || true
           find native/mpv-android -type f -name 'meson-log.txt' -print | while read -r log; do

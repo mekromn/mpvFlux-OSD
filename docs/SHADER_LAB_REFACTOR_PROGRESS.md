@@ -52,7 +52,7 @@ This file is the execution/status companion to `SHADER_LAB_REFACTOR_ROADMAP.md` 
 
 - Normalized readable v6.1.1 Lua/GLSL/config source under `app/src/main/assets/mpvlab/source/`.
 - Engine manifest/integrity tooling and migration inventory.
-- Validation run #23 / `32387282949` — **PASS**.
+- Validation run #23 / `32387282949`: **PASS**.
 
 ### R03 — Canonical workspace manager
 
@@ -337,3 +337,20 @@ Native prerequisite discovered during replan:
 Implementation begins by producing and validating the narrowly scoped Android libmpv prerequisite, then converting the shader/bridge to resident parameter transport. Detailed design is in `docs/R08_RESIDENT_GPU_PARAMETER_ARCHITECTURE.md`.
 
 `CURRENT_STEP` remains R08 until the new native/resident pipeline passes real Pixel validation. R09 is not started.
+
+## R08 exact-R07 renderer parity forensic checkpoint — 2026-08-21/22
+
+**Status:** `IN_PROGRESS`; renderer stack remains frozen.
+
+Detailed evidence is preserved in `docs/R08_RENDERER_PARITY_FORENSICS.md`.
+
+- Stale job `96881103884` proved only that the old native parity step failed; its retained log endpoint did not provide a trustworthy first error, so no renderer dependency was changed from that evidence.
+- Fresh diagnostic trigger commit `d69429e482d5a382631714cf7f348933861c7977` produced `R08 Renderer Parity Proof` run #24 / run ID `32558275237` / native job `96995796033`.
+- Run #24 failure artifact `9472167298` (`sha256:245f6728c08e807286cb5ac9695ddb245d0e18a233ae5486fd44e65c0de7cf06`) reproduced the same first failure already captured by run #22 / `32557710494` / job `96994430564`.
+- Both instrumented runs completed the exact native build and linked `libmpv.so`; the first proven blocker was a verifier false-negative at `renderer_fingerprint_gates`, line 346: host `file(1)` output was piped into `grep -F 'for Android 24'`.
+- Before that verifier failure, the logs proved exact FFmpeg `N-122998-g5ba2525c7a`, exact libplacebo `v7.360.0 (v7.360.0-3-gc93aa134)`, mpv Vulkan enabled, `pl_vulkan_create`, `DT_NEEDED libvulkan.so`, FFmpeg `aarch64-linux-android24-clang`, no libxml2 dependency, and no `force_mpegts` contamination.
+- Verification-only repair commit `66f56e973f3d2673778e9d1f48d925afdb262762` replaced the native gate's host `file(1)` prose dependency with direct parsing of the canonical `.note.android.ident` ELF payload and retained the 16 KB `PT_LOAD` alignment checks. No mpv/FFmpeg/libplacebo/shaderc/NDK/Vulkan/PARAM input changed.
+- The accepted R07 Pixel APK was independently re-audited locally: all eight target arm64 ELFs (`libmpv`, six FFmpeg libraries plus `libswresample`/`libswscale`) decode Android API `24`, NDK `r29`, build `14206865`, and have minimum `PT_LOAD` alignment `0x4000`.
+- The workflow's later packaged-APK verification step was found to duplicate the same fragile `file(1)` string test. That duplicate is being replaced by the same direct `.note.android.ident` validation before the next authoritative parity run, and success/failure artifacts now retain Android-ident evidence.
+- Corrected false leads: current exact libplacebo uses its pinned `Vulkan-Headers` submodule (`450bd2232225d6c7728a4108055ac2e37cef6475`) rather than a removed NDK Vulkan registry path; shaderc and Vulkan discovery are not the first blocker because the exact native build completed and linked with `libvulkan.so`.
+- R08 remains blocked only on automated exact-stack proof followed by real Pixel 9 Pro XL / Android 16 visual parity. No mined post-R07 renderer patches may land before that device checkpoint.
