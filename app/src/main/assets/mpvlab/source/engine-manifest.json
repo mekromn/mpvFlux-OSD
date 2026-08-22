@@ -1,7 +1,7 @@
 {
   "canonicalWorkspace": "/storage/emulated/0/mpv",
   "controlCatalogVersion": "legacy-v6.1.1-typed-1",
-  "engineVersion": "6.1.1-source-r08-resident-5-black-video-hotfix",
+  "engineVersion": "6.1.1-source-r08-live-uniform-studio-1",
   "entrypoints": {
     "controller": "scripts/pixel9-shader-lab.lua",
     "inputConfig": "config/input.conf",
@@ -54,7 +54,7 @@
     {
       "bytes": 11163,
       "path": "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl",
-      "sha256": "5d9058eeeb1dd15c429c856373feeb0574e7dc0aa92b48d05817620b028869ee"
+      "sha256": "e4fcac1497ab40b1d07de0955e969aaaa060c95f2b63e5ec007c4b86524c2d7a"
     },
     {
       "bytes": 12193,
@@ -118,7 +118,7 @@
     "payloadParts": 8,
     "payloadSha256": "e498dfebbec204b264fb00bf5a39f9df70ecec6f87bc34fdc224cfc14653dcc6",
     "r07StateTransport": "R07 state-3: event-driven native state with Android MPVLib compatibility fallback through the string-converted user-data root map.",
-    "r08ResidentTransport": "R08 resident-5 hotfix: full 53-control native surface retained; always-loaded resident shader restored byte-for-byte to the previously rendered 39-PARAM V3.1 implementation after on-device black-video regression.",
+    "r08ResidentTransport": "R08 live-uniform Studio: 39 public resident tuning PARAMs plus private R08_BYPASS; glsl-shader-opts updates mutate resident hook values in-place through the R08 native vo=gpu patch, with no normal-edit shader-list churn.",
     "repository": "mekromn/mpvFlux-OSD"
   }
 }
