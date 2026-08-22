@@ -5,15 +5,19 @@ set -Eeuo pipefail
 #
 # Keep the already-proven exact-R07 native rebuild recipe byte-for-byte frozen
 # at the commit below. This wrapper materializes that script, injects only the
-# separately-audited R08 live-uniform PARAM patch, and executes it. That makes
-# the new realtime behavior explicit without allowing the native parity recipe
-# to drift while Shader Lab UI work continues.
+# separately-audited R08 live-uniform PARAM patch, and executes it.
+#
+# IMPORTANT: the R08 patch touches mpv's vo=gpu renderer only. The runtime APK
+# must therefore keep the proven R07 FFmpeg shared libraries byte-for-byte.
+# Rebuilding FFmpeg is still required while compiling libmpv, but those freshly
+# built FFmpeg .so files are NOT allowed to leak into the packaged parity AAR.
 
 ROOT_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
 BASE_SCRIPT_COMMIT=9a941321285cc2dcf47b3a24aaf5765575815936
 BASE_SCRIPT_PATH=tools/r08_renderer_parity_rebuild.sh
 TMP_SCRIPT="$(mktemp -t r08-renderer-parity-live.XXXXXX.sh)"
-trap 'rm -f "$TMP_SCRIPT"' EXIT
+TMP_R07_AAR="$(mktemp -d -t r08-r07-aar.XXXXXX)"
+trap 'rm -f "$TMP_SCRIPT"; rm -rf "$TMP_R07_AAR"' EXIT
 
 if ! git -C "$ROOT_DIR" cat-file -e "$BASE_SCRIPT_COMMIT^{commit}" 2>/dev/null; then
     git -C "$ROOT_DIR" fetch --no-tags --depth=1 origin "$BASE_SCRIPT_COMMIT"
@@ -46,4 +50,53 @@ p.write_text(s)
 PY
 
 chmod +x "$TMP_SCRIPT"
-exec bash "$TMP_SCRIPT"
+bash "$TMP_SCRIPT"
+
+# The device regression from the first R08 parity APK proved that source/config
+# fingerprints alone are insufficient. The actual user-tested R07 APK contains
+# the hashes below. The repository base AAR carries the same R07 FFmpeg stack.
+# Verify that fact, then overwrite the freshly rebuilt FFmpeg runtime libraries
+# in the prefix so downstream parity packaging can only replace libmpv itself.
+BASE_AAR="$ROOT_DIR/app/libs/mpv-android-lib-v0.0.1.aar"
+PREFIX="$ROOT_DIR/native/mpv-android/buildscripts/prefix/arm64/lib"
+test -f "$BASE_AAR"
+test -f "$PREFIX/libmpv.so"
+unzip -q "$BASE_AAR" 'jni/arm64-v8a/*.so' -d "$TMP_R07_AAR"
+R07_LIB_DIR="$TMP_R07_AAR/jni/arm64-v8a"
+
+declare -A R07_SHA256=(
+  [libavcodec.so]=877386be91178e01997cee480ac1a7adbb77a9367408a88216b5ff87e02f01b4
+  [libavdevice.so]=6416eae02515326805377891ded2bdec9677a7a183f4c18aa4555dfb7680da6a
+  [libavfilter.so]=c42af455f845636fa003184d3034aeb8fdeff378ecbce8a7403953cee0457acb
+  [libavformat.so]=d814e70c446c2aef56197cfd61370a880f78359f5ece2ee713214b379975cfbd
+  [libavutil.so]=b7a08a5d228ac217d2b62e4e99cb05eaaa
+  [libswresample.so]=35b37154205f60f2692a250367f30f5711d7749ddbbe52710c3ed2bd15a4bff9
+  [libswscale.so]=757d7b7db9aed9f6e5bb1fcf50b4c3ac6d00ae4d3a7166718c2c097dcf38c043
+)
+
+# Correct the avutil hash separately to make accidental visual truncation in
+# the associative literal impossible to pass silently.
+R07_SHA256[libavutil.so]=b7a08a5d228ac2f6e95a65a41e1bdf62b2fde7003ec73dd2b62e4e99cb05eaaa
+
+for name in libavcodec.so libavdevice.so libavfilter.so libavformat.so libavutil.so libswresample.so libswscale.so; do
+  src="$R07_LIB_DIR/$name"
+  test -f "$src"
+  actual="$(sha256sum "$src" | awk '{print $1}')"
+  expected="${R07_SHA256[$name]}"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "R07 runtime hash mismatch: $name expected=$expected actual=$actual" >&2
+    exit 1
+  fi
+  cp -f "$src" "$PREFIX/$name"
+  restored="$(sha256sum "$PREFIX/$name" | awk '{print $1}')"
+  test "$restored" = "$expected"
+  echo "R07_RUNTIME_RESTORED $name $restored"
+done
+
+# Preserve this proof in the parity artifact's existing renderer fingerprint.
+{
+  echo "runtime_ffmpeg_stack=r07_base_aar_exact"
+  echo "runtime_ffmpeg_hash_gate=yes"
+} >> /tmp/r08-renderer-parity-fingerprint.txt
+
+echo 'R08 runtime isolation PASS: patched libmpv + byte-exact R07 FFmpeg stack'
