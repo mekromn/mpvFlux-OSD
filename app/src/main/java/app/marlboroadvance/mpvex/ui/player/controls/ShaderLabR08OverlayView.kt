@@ -3,9 +3,12 @@ package app.marlboroadvance.mpvex.ui.player.controls
 import android.content.Context
 import android.util.AttributeSet
 import android.view.View
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.AbstractComposeView
 import app.marlboroadvance.mpvex.ui.theme.MpvexTheme
@@ -97,7 +100,10 @@ class ShaderLabR08OverlayView @JvmOverloads constructor(
       )
 
       MaterialTheme(colorScheme = shaderLabColors) {
-        ShaderLabStudioOverlay()
+        Box(Modifier.fillMaxSize()) {
+          ShaderLabStudioOverlay()
+          ShaderLabStatsOverlay()
+        }
       }
     }
   }
