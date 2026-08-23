@@ -95,6 +95,7 @@ fun ShaderLabStudioOverlay(
 
   BoxWithConstraints(modifier = modifier.fillMaxSize()) {
     val wideStudio = maxWidth >= 760.dp && maxHeight >= 360.dp
+    val availableHeight = maxHeight
 
     AnimatedVisibility(
       visible = visible,
@@ -111,7 +112,7 @@ fun ShaderLabStudioOverlay(
           Modifier
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
-            .heightIn(min = 360.dp, max = maxHeight - 8.dp)
+            .heightIn(min = 360.dp, max = availableHeight - 8.dp)
             .padding(8.dp)
         }
 
