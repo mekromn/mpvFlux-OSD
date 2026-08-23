@@ -47,11 +47,12 @@ class ShaderLabResidentGpuTransportTest {
   }
 
   @Test
-  fun activeSdrPublishIsOptionOnlyAndNeverMutatesShaderList() {
+  fun activeSdrPublishUsesBareOptionOnlyAndNeverMutatesShaderList() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
     gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
     transport.commands.clear()
+    transport.getStringCalls = 0
 
     val changed = ShaderLabControlCatalog.defaults().toMutableMap().apply {
       this[ShaderLabControlId.BRIGHT_CHROMA] = 0.3333333333333333
@@ -60,10 +61,11 @@ class ShaderLabResidentGpuTransportTest {
 
     assertEquals(1, transport.commands.size)
     assertEquals("set", transport.commands.single()[0])
-    assertEquals(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY, transport.commands.single()[1])
+    assertEquals(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY, transport.commands.single()[1])
     assertTrue(transport.commands.single()[2].contains("BRIGHT_CHROMA=0.333333333333333"))
     assertTrue(transport.commands.single()[2].contains("R08_BYPASS=0"))
     assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
+    assertEquals("live publish must not synchronously read mpv properties", 0, transport.getStringCalls)
     assertTrue(
       transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADERS_PROPERTY)
         .contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
@@ -81,6 +83,7 @@ class ShaderLabResidentGpuTransportTest {
 
     assertEquals(1, transport.commands.size)
     assertEquals("set", transport.commands.single()[0])
+    assertEquals(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY, transport.commands.single()[1])
     assertTrue(transport.commands.single()[2].contains("R08_BYPASS=1"))
     assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
     assertTrue(
@@ -91,6 +94,7 @@ class ShaderLabResidentGpuTransportTest {
     transport.commands.clear()
     gpu.setOriginalView(false, ShaderLabSourceKind.SDR)
     assertEquals(1, transport.commands.size)
+    assertEquals(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY, transport.commands.single()[1])
     assertTrue(transport.commands.single()[2].contains("R08_BYPASS=0"))
     assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
   }
@@ -109,13 +113,14 @@ class ShaderLabResidentGpuTransportTest {
     gpu.publish(changed)
 
     assertEquals(1, transport.commands.size)
+    assertEquals(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY, transport.commands.single()[1])
     assertTrue(transport.commands.single()[2].contains("CHROMA_MASTER=0.0000000000000000"))
     assertTrue(transport.commands.single()[2].contains("R08_BYPASS=1"))
     assertFalse(transport.commands.any { it.firstOrNull() == "change-list" })
   }
 
   @Test
-  fun synchronousPublishFailureAttemptsLastKnownGoodRollback() {
+  fun synchronousSetFailureDoesNotAdvanceTheResidentValueBank() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
     val initial = ShaderLabControlCatalog.defaults()
@@ -132,7 +137,7 @@ class ShaderLabResidentGpuTransportTest {
 
     assertTrue(result.isFailure)
     assertEquals(previous, transport.commands.last()[2])
-    assertEquals(previous, transport.strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY])
+    assertEquals(previous, transport.strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY])
   }
 
   @Test
@@ -173,28 +178,31 @@ class ShaderLabResidentGpuTransportTest {
   }
 
   @Test
-  fun publishRejectsAReadbackThatDidNotAcceptTheRequestedValue() {
+  fun ordinaryPublishDoesNotPerformImmediateReadbackVerification() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
     val initial = ShaderLabControlCatalog.defaults()
     gpu.initialize(initial, ShaderLabSourceKind.NOT_READY)
-    gpu.publish(initial)
+    transport.getStringCalls = 0
 
-    transport.corruptNextReadback = true
     val changed = initial.toMutableMap().apply {
       this[ShaderLabControlId.LUMA_CONTRAST] = 0.777
     }
-
     val result = runCatching { gpu.publish(changed) }
 
-    assertTrue(result.isFailure)
+    assertTrue(result.isSuccess)
+    assertEquals(0, transport.getStringCalls)
+    assertTrue(
+      transport.strings.getValue(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY)
+        .contains("LUMA_CONTRAST=0.777"),
+    )
   }
 
   private class FakeTransport : ShaderLabMpvTransport {
     val commands = mutableListOf<List<String>>()
     val strings = mutableMapOf<String, String>()
     var failNextSet = false
-    var corruptNextReadback = false
+    var getStringCalls = 0
 
     override fun attach(listener: (String, ShaderLabMpvValue) -> Unit) = Unit
     override fun detach() = Unit
@@ -202,12 +210,8 @@ class ShaderLabResidentGpuTransportTest {
     override fun observeDouble(property: String) = Unit
 
     override fun getString(property: String): String? {
-      val value = strings[property]
-      if (corruptNextReadback && property == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) {
-        corruptNextReadback = false
-        return "LUMA_CONTRAST=0.123"
-      }
-      return value
+      getStringCalls += 1
+      return strings[property]
     }
 
     override fun getDouble(property: String): Double? = null
@@ -216,7 +220,7 @@ class ShaderLabResidentGpuTransportTest {
       if (
         failNextSet &&
           args.getOrNull(0) == "set" &&
-          args.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY
+          args.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY
       ) {
         failNextSet = false
         throw IllegalStateException("synthetic resident set failure")
@@ -226,7 +230,11 @@ class ShaderLabResidentGpuTransportTest {
       when {
         args.getOrNull(0) == "set" && args.size >= 3 -> {
           strings[args[1]] = args[2]
-          if (args[1] == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) {
+          if (
+            args[1] == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY ||
+              args[1] == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY
+          ) {
+            strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY] = args[2]
             strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY] = args[2]
           }
         }
