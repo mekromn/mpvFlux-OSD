@@ -5,7 +5,7 @@ set -Eeuo pipefail
 #
 # Keep the already-proven exact-R07 native rebuild recipe byte-for-byte frozen
 # at the commit below. This wrapper materializes that script, injects only the
-# separately-audited R08 live-uniform PARAM patch, and executes it.
+# separately-audited R08 live-uniform PARAM patches, and executes it.
 #
 # IMPORTANT: the R08 patch touches mpv's vo=gpu renderer only. The runtime APK
 # must therefore keep the proven R07 FFmpeg shared libraries byte-for-byte.
@@ -39,7 +39,7 @@ s = p.read_text()
 
 anchor = '''r08_phase static_audit\n'''
 assert s.count(anchor) == 1, s.count(anchor)
-inject = '''r08_phase live_uniform_param_patch\npython3 "$ROOT_DIR/tools/patch_r08_live_uniform_params.py" deps/mpv\n\n'''
+inject = '''r08_phase live_uniform_param_patch\npython3 "$ROOT_DIR/tools/patch_r08_live_uniform_params.py" deps/mpv\npython3 "$ROOT_DIR/tools/patch_r08_live_uniform_poll.py" deps/mpv\n\n'''
 s = s.replace(anchor, inject + anchor, 1)
 
 # The frozen parity recipe built Android NDK's libshaderc_combined archive, but
@@ -68,12 +68,12 @@ s = s.replace(old, new, 1)
 
 anchor = '''grep -F '#define SHADER_MAX_PARAMS 64' deps/mpv/video/out/gpu/user_shaders.h\n'''
 assert s.count(anchor) == 1, s.count(anchor)
-audit = '''grep -F 'char *source_path;' deps/mpv/video/out/gpu/user_shaders.h\ngrep -F 'refresh_live_user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'm_config_cache_get_next_changed(p->opts_cache, &changed)' deps/mpv/video/out/gpu/video.c\ngrep -F 'changed == &cached->user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'gl_sc_uniform_dynamic(p->sc)' deps/mpv/video/out/gpu/video.c\ngrep -F 'R08 PARAM refresh matched=%d user_hooks=%d' deps/mpv/video/out/gpu/video.c\ngrep -F 'R08 full renderer option reinit' deps/mpv/video/out/gpu/video.c\ngrep -F -- '-Dshaderc=enabled' scripts/libplacebo.sh\ngrep -F -- '-Dglslang=disabled' scripts/libplacebo.sh\n'''
+audit = '''grep -F 'char *source_path;' deps/mpv/video/out/gpu/user_shaders.h\ngrep -F 'refresh_live_user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'm_config_cache_get_next_changed(p->opts_cache, &changed)' deps/mpv/video/out/gpu/video.c\ngrep -F 'changed == &cached->user_shader_opts' deps/mpv/video/out/gpu/video.c\ngrep -F 'gl_sc_uniform_dynamic(p->sc)' deps/mpv/video/out/gpu/video.c\ngrep -F 'struct m_config_cache *shader_opts_cache;' deps/mpv/video/out/gpu/video.c\ngrep -F 'm_config_cache_update(p->shader_opts_cache)' deps/mpv/video/out/gpu/video.c\ngrep -F 'refresh_live_user_shader_opts(p);' deps/mpv/video/out/gpu/video.c\ngrep -F 'R08 PARAM frame refresh matched=%d user_hooks=%d' deps/mpv/video/out/gpu/video.c\ngrep -F 'R08 full renderer option reinit' deps/mpv/video/out/gpu/video.c\ngrep -F -- '-Dshaderc=enabled' scripts/libplacebo.sh\ngrep -F -- '-Dglslang=disabled' scripts/libplacebo.sh\n'''
 s = s.replace(anchor, anchor + audit, 1)
 
 anchor = '''    echo "shader_max_params=64"\n'''
 assert s.count(anchor) == 1, s.count(anchor)
-s = s.replace(anchor, anchor + '    echo "r08_live_uniform_params=yes"\n    echo "r08_dynamic_uniforms=yes"\n', 1)
+s = s.replace(anchor, anchor + '    echo "r08_live_uniform_params=yes"\n    echo "r08_dynamic_uniforms=yes"\n    echo "r08_frame_authoritative_param_poll=yes"\n', 1)
 
 # Reject the exact failure that produced the black-screen Pixel build. The
 # accepted R07 libmpv exports 6936 dynamic definitions and contains the static
