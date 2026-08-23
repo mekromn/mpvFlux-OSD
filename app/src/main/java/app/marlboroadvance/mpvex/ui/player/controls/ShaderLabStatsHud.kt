@@ -1,0 +1,191 @@
+package app.marlboroadvance.mpvex.ui.player.controls
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge
+import app.marlboroadvance.mpvex.repository.shaderlab.bridge.ShaderLabResidentGpuTransport
+import `is`.xyz.mpv.MPVLib
+import kotlinx.coroutines.delay
+import org.koin.compose.koinInject
+
+private data class ShaderLabHudSnapshot(
+  val vo: String = "—",
+  val gpu: String = "—",
+  val context: String = "—",
+  val shaderAttached: Boolean = false,
+  val paramCount: Int = 0,
+  val glslOptsPreview: String = "—",
+  val frameDrops: String = "—",
+  val decoderDrops: String = "—",
+)
+
+/**
+ * Device-facing R08 Stats for Nerds HUD.
+ *
+ * It intentionally opens by default with Shader Lab. The user should never
+ * need to know a hidden gesture or hunt for a low-contrast launcher while we
+ * are validating the resident PARAM path on-device.
+ */
+@Composable
+fun ShaderLabStatsHud(
+  modifier: Modifier = Modifier,
+) {
+  val bridge = koinInject<MpvShaderLabBridge>()
+  val uiController = koinInject<ShaderLabUiController>()
+  val studioVisible by uiController.visible.collectAsState()
+  val backend by bridge.state.collectAsState()
+
+  var open by remember { mutableStateOf(true) }
+  var snapshot by remember { mutableStateOf(ShaderLabHudSnapshot()) }
+
+  LaunchedEffect(studioVisible) {
+    if (studioVisible) open = true
+  }
+
+  LaunchedEffect(studioVisible, open) {
+    if (!studioVisible) return@LaunchedEffect
+    while (studioVisible) {
+      snapshot = readHudSnapshot()
+      delay(if (open) 350L else 1000L)
+    }
+  }
+
+  if (!studioVisible) return
+
+  Box(modifier.fillMaxSize()) {
+    Column(
+      modifier = Modifier
+        .align(Alignment.TopStart)
+        .padding(start = 12.dp, top = 12.dp)
+        .widthIn(max = 430.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Button(
+        onClick = { open = !open },
+        colors = ButtonDefaults.buttonColors(
+          containerColor = MaterialTheme.colorScheme.primaryContainer,
+          contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ),
+      ) {
+        Text(
+          if (open) "HIDE STATS" else "SHOW STATS",
+          fontWeight = FontWeight.Bold,
+        )
+      }
+
+      if (open) {
+        Surface(
+          color = Color(0xED0C0B10),
+          contentColor = Color(0xFFF8F5FC),
+          shape = RoundedCornerShape(18.dp),
+          tonalElevation = 4.dp,
+        ) {
+          Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+          ) {
+            Text(
+              "CHROVELO • STATS FOR NERDS",
+              color = Color(0xFFFFFFFF),
+              fontWeight = FontWeight.Black,
+              style = MaterialTheme.typography.labelLarge,
+            )
+            HudRow("Bridge", if (backend.ready) "LIVE" else if (backend.connected) "SYNC" else "OFFLINE")
+            HudRow("Source", "${backend.sourceKind} • ${backend.sourceGamma ?: "—"}")
+            HudRow("VO", snapshot.vo)
+            HudRow("GPU", "${snapshot.gpu} • ${snapshot.context}")
+            HudRow("Resident", if (snapshot.shaderAttached) "ATTACHED" else "NOT ATTACHED")
+            HudRow("PARAM opts", snapshot.paramCount.toString())
+            HudRow("Drops", "vo ${snapshot.frameDrops} • dec ${snapshot.decoderDrops}")
+            HudRow("Opts", snapshot.glslOptsPreview)
+            backend.lastError?.let { HudRow("ERROR", it) }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun HudRow(label: String, value: String) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    Text(
+      label,
+      modifier = Modifier.widthIn(min = 82.dp, max = 100.dp),
+      color = Color(0xFFC9B8FF),
+      fontFamily = FontFamily.Monospace,
+      style = MaterialTheme.typography.labelSmall,
+      fontWeight = FontWeight.Bold,
+    )
+    Text(
+      value,
+      modifier = Modifier.weight(1f),
+      color = Color(0xFFFFFFFF),
+      fontFamily = FontFamily.Monospace,
+      style = MaterialTheme.typography.labelSmall,
+      maxLines = 2,
+    )
+  }
+}
+
+private fun readHudSnapshot(): ShaderLabHudSnapshot {
+  fun text(vararg names: String): String? {
+    names.forEach { name ->
+      val value = runCatching { MPVLib.getPropertyString(name) }.getOrNull()?.trim()
+      if (!value.isNullOrBlank()) return value
+    }
+    return null
+  }
+
+  fun number(vararg names: String): String? {
+    names.forEach { name ->
+      val direct = runCatching { MPVLib.getPropertyDouble(name) }.getOrNull()
+      if (direct != null && direct.isFinite()) return direct.toLong().toString()
+      text(name)?.toDoubleOrNull()?.let { if (it.isFinite()) return it.toLong().toString() }
+    }
+    return null
+  }
+
+  val shaders = text("options/glsl-shaders", "glsl-shaders").orEmpty()
+  val opts = text("options/glsl-shader-opts", "glsl-shader-opts").orEmpty()
+  val preview = if (opts.length <= 145) opts else opts.take(142) + "…"
+
+  return ShaderLabHudSnapshot(
+    vo = text("current-vo", "vo") ?: "—",
+    gpu = text("options/gpu-api", "gpu-api") ?: "—",
+    context = text("options/gpu-context", "gpu-context") ?: "—",
+    shaderAttached = shaders.contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
+    paramCount = opts.split(',').count { it.contains('=') },
+    glslOptsPreview = preview.ifBlank { "—" },
+    frameDrops = number("frame-drop-count") ?: "—",
+    decoderDrops = number("decoder-frame-drop-count") ?: "—",
+  )
+}
