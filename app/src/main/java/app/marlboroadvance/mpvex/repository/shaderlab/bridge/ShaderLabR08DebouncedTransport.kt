@@ -9,15 +9,9 @@ import app.marlboroadvance.mpvex.repository.shaderlab.ShaderLabEngineInstaller
 /**
  * Production R08 transport instrumentation.
  *
- * Slider movement must stay on the shortest possible path:
- * Android value -> one mpv set command -> resident vo=gpu PARAM update.
- *
- * The original proof wrapper intentionally read back renderer/frame properties
- * after every publish. That is useful in a unit test but is hostile to a live
- * grading surface because several synchronous JNI/mpv property reads happen on
- * every pointer tick. This wrapper records only the command latency while the
- * gesture is active and debounces the expensive proof snapshot until input has
- * been idle for [settleMillis].
+ * Slider movement stays on the shortest possible path:
+ * Android value -> one bare mpv glsl-shader-opts set -> resident vo=gpu PARAM.
+ * Expensive proof reads happen only after input has been idle for [settleMillis].
  */
 internal class ShaderLabR08DebouncedProbedMpvTransport(
   private val delegate: ShaderLabMpvTransport,
@@ -32,7 +26,6 @@ internal class ShaderLabR08DebouncedProbedMpvTransport(
   )
 
   private var pendingPublish: PendingPublish? = null
-
   private val settleRunnable = Runnable { captureSettledSnapshot() }
 
   override fun attach(listener: (String, ShaderLabMpvValue) -> Unit) {
@@ -60,9 +53,11 @@ internal class ShaderLabR08DebouncedProbedMpvTransport(
       args.getOrNull(0) == "change-list" && args.getOrNull(1) == "glsl-shaders"
     if (isShaderListMutation) runCatching { probe.shaderListMutation() }
 
+    val optionName = args.getOrNull(1)
     val isResidentPublish =
       args.getOrNull(0) == "set" &&
-        args.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY &&
+        (optionName == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY ||
+          optionName == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) &&
         args.size >= 3
 
     if (!isResidentPublish) {
@@ -90,23 +85,26 @@ internal class ShaderLabR08DebouncedProbedMpvTransport(
     pendingPublish = null
 
     val sampleStart = nanoTime()
+    val readback =
+      safeString(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY)
+        ?: safeString(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY)
     val sample =
       ShaderLabR08ResidentPublishSample(
         requestedOptions = pending.requestedOptions,
-        readbackOptions = safeString(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY),
+        readbackOptions = readback,
         commandLatencyNanos = pending.commandLatencyNanos,
         // In this production wrapper this measures the settled diagnostic
         // snapshot itself, not time spent blocking the active slider command.
         setAndReadbackLatencyNanos = 0L,
         sourceGamma = safeString(MpvShaderLabBridge.SOURCE_GAMMA_PROPERTY),
-        shaderList = safeString("glsl-shaders"),
+        shaderList = safeString("glsl-shaders") ?: safeString("options/glsl-shaders"),
         frameDropCount = safeLong("frame-drop-count"),
         decoderFrameDropCount = safeLong("decoder-frame-drop-count"),
         mistimedFrameCount = safeLong("mistimed-frame-count"),
         voDelayedFrameCount = safeLong("vo-delayed-frame-count"),
-        videoOutput = safeString("vo"),
-        gpuApi = safeString("gpu-api"),
-        gpuContext = safeString("gpu-context"),
+        videoOutput = safeString("current-vo") ?: safeString("vo"),
+        gpuApi = safeString("gpu-api") ?: safeString("options/gpu-api"),
+        gpuContext = safeString("gpu-context") ?: safeString("options/gpu-context"),
         hwdecCurrent = safeString("hwdec-current"),
       )
 
