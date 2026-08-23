@@ -141,7 +141,7 @@ class ShaderLabResidentGpuTransportTest {
   }
 
   @Test
-  fun sourceBoundariesAttachResidentOnlyOnceAndRemoveItForHdr() {
+  fun sourceBoundariesForceReloadResidentOnlyWhenRequestedAndRemoveItForHdr() {
     val transport = FakeTransport()
     val gpu = ShaderLabResidentGpuTransport(transport)
     gpu.initialize(ShaderLabControlCatalog.defaults(), ShaderLabSourceKind.SDR)
@@ -159,9 +159,25 @@ class ShaderLabResidentGpuTransportTest {
 
     transport.commands.clear()
     gpu.reconcileSource(ShaderLabSourceKind.SDR, force = true)
+    val forceRemoves =
+      transport.commands.filter {
+        it.getOrNull(2) == "remove" &&
+          it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH
+      }
+    val forceAppends =
+      transport.commands.filter {
+        it.getOrNull(2) == "append" &&
+          it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH
+      }
+    assertEquals(1, forceRemoves.size)
+    assertEquals(1, forceAppends.size)
+    assertTrue(transport.commands.indexOf(forceRemoves.single()) < transport.commands.indexOf(forceAppends.single()))
+
+    transport.commands.clear()
+    gpu.reconcileSource(ShaderLabSourceKind.SDR, force = false)
     assertFalse(
       transport.commands.any {
-        it.getOrNull(2) == "append" &&
+        it.firstOrNull() == "change-list" &&
           it.getOrNull(3) == ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH
       },
     )
@@ -219,8 +235,8 @@ class ShaderLabResidentGpuTransportTest {
     override fun command(vararg args: String) {
       if (
         failNextSet &&
-          args.getOrNull(0) == "set" &&
-          args.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY
+        args.getOrNull(0) == "set" &&
+        args.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY
       ) {
         failNextSet = false
         throw IllegalStateException("synthetic resident set failure")
