@@ -1,6 +1,10 @@
 package app.marlboroadvance.mpvex.ui.player.controls
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -18,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -47,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -78,10 +82,10 @@ import kotlin.math.roundToInt
 /**
  * Native R08 Shader Lab Studio.
  *
- * The surface is intentionally adaptive instead of using a fixed-width debug
- * card. Landscape receives a persistent navigation rail plus a wide editor;
- * compact/portrait layouts keep group navigation horizontal. Comparison stays
- * pinned so bypass/original never disappear while tuning a long control group.
+ * The Studio is a themed, translucent right-edge drawer. During direct tuning
+ * it enters reference mode: the active control stays physically stationary,
+ * nonessential chrome fades without reflowing, and the drawer becomes nearly
+ * transparent so the video remains the dominant visual reference.
  */
 @Composable
 fun ShaderLabStudioOverlay(
@@ -95,25 +99,27 @@ fun ShaderLabStudioOverlay(
 
   BoxWithConstraints(modifier = modifier.fillMaxSize()) {
     val wideStudio = maxWidth >= 760.dp && maxHeight >= 360.dp
-    val availableHeight = maxHeight
 
     AnimatedVisibility(
       visible = visible,
       modifier = Modifier.fillMaxSize(),
+      enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+      exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
     ) {
       Box(Modifier.fillMaxSize()) {
         val panelModifier = if (wideStudio) {
           Modifier
             .align(Alignment.CenterEnd)
             .fillMaxHeight()
-            .widthIn(min = 640.dp, max = 760.dp)
-            .padding(12.dp)
+            .widthIn(min = 620.dp, max = 740.dp)
+            .padding(start = 10.dp, top = 10.dp, bottom = 10.dp, end = 8.dp)
         } else {
           Modifier
-            .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .heightIn(min = 360.dp, max = availableHeight - 8.dp)
-            .padding(8.dp)
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight()
+            .fillMaxWidth(0.94f)
+            .widthIn(max = 560.dp)
+            .padding(start = 8.dp, top = 8.dp, bottom = 8.dp, end = 6.dp)
         }
 
         ShaderLabStudioPanel(
@@ -147,6 +153,8 @@ private fun ShaderLabStudioPanel(
   }
   var selectedGroup by remember { mutableStateOf(ShaderLabGroup.MASTER) }
   var pendingConfirmation by remember { mutableStateOf<ShaderLabActionId?>(null) }
+  var tuningControl by remember { mutableStateOf<ShaderLabControlId?>(null) }
+  val referenceMode = tuningControl != null
 
   val editingEnabled =
     backend.ready &&
@@ -156,28 +164,41 @@ private fun ShaderLabStudioPanel(
 
   Card(
     modifier = modifier,
-    shape = RoundedCornerShape(if (wideStudio) 26.dp else 24.dp),
+    shape = RoundedCornerShape(topStart = 26.dp, bottomStart = 26.dp, topEnd = 12.dp, bottomEnd = 12.dp),
     colors = CardDefaults.cardColors(
-      containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.975f),
+      containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(
+        alpha = if (referenceMode) 0.14f else 0.84f,
+      ),
     ),
   ) {
     Column(Modifier.fillMaxSize()) {
-      StudioHeader(backend = backend, onClose = onClose)
-      ComparisonDock(backend = backend, commandApi = commandApi)
-      HorizontalDivider()
+      StudioHeader(
+        backend = backend,
+        referenceMode = referenceMode,
+        onClose = onClose,
+      )
+      ComparisonDock(
+        backend = backend,
+        commandApi = commandApi,
+        referenceMode = referenceMode,
+      )
+      HorizontalDivider(modifier = Modifier.alpha(if (referenceMode) 0f else 1f))
 
       if (wideStudio) {
         Row(Modifier.fillMaxSize()) {
           StudioNavigationRail(
             groups = groups,
             selectedGroup = selectedGroup,
+            referenceMode = referenceMode,
             onSelect = {
               selectedGroup = it
               pendingConfirmation = null
             },
-            modifier = Modifier.width(174.dp).fillMaxHeight(),
+            modifier = Modifier.width(166.dp).fillMaxHeight(),
           )
-          HorizontalDivider(modifier = Modifier.width(1.dp).fillMaxHeight())
+          HorizontalDivider(
+            modifier = Modifier.width(1.dp).fillMaxHeight().alpha(if (referenceMode) 0f else 1f),
+          )
           StudioEditorPane(
             group = selectedGroup,
             backend = backend,
@@ -185,6 +206,8 @@ private fun ShaderLabStudioPanel(
             visibleControls = visibleControls,
             editingEnabled = editingEnabled,
             pendingConfirmation = pendingConfirmation,
+            tuningControl = tuningControl,
+            onTuningControlChange = { tuningControl = it },
             onPendingConfirmation = { pendingConfirmation = it },
             modifier = Modifier.weight(1f).fillMaxHeight(),
           )
@@ -193,12 +216,13 @@ private fun ShaderLabStudioPanel(
         CompactGroupStrip(
           groups = groups,
           selectedGroup = selectedGroup,
+          referenceMode = referenceMode,
           onSelect = {
             selectedGroup = it
             pendingConfirmation = null
           },
         )
-        HorizontalDivider()
+        HorizontalDivider(modifier = Modifier.alpha(if (referenceMode) 0f else 1f))
         StudioEditorPane(
           group = selectedGroup,
           backend = backend,
@@ -206,6 +230,8 @@ private fun ShaderLabStudioPanel(
           visibleControls = visibleControls,
           editingEnabled = editingEnabled,
           pendingConfirmation = pendingConfirmation,
+          tuningControl = tuningControl,
+          onTuningControlChange = { tuningControl = it },
           onPendingConfirmation = { pendingConfirmation = it },
           modifier = Modifier.fillMaxSize(),
         )
@@ -217,10 +243,14 @@ private fun ShaderLabStudioPanel(
 @Composable
 private fun StudioHeader(
   backend: ShaderLabBackendState,
+  referenceMode: Boolean,
   onClose: () -> Unit,
 ) {
   Row(
-    modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 10.dp, top = 12.dp, bottom = 8.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .alpha(if (referenceMode) 0f else 1f)
+      .padding(start = 18.dp, end = 10.dp, top = 12.dp, bottom = 8.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
     Column(Modifier.weight(1f)) {
@@ -236,11 +266,7 @@ private fun StudioHeader(
       Text(
         studioStatusText(backend),
         style = MaterialTheme.typography.labelMedium,
-        color = if (backend.lastError != null) {
-          MaterialTheme.colorScheme.error
-        } else {
-          MaterialTheme.colorScheme.onSurfaceVariant
-        },
+        color = if (backend.lastError != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
       )
@@ -266,10 +292,7 @@ private fun BackendStatusPill(backend: ShaderLabBackendState) {
     else -> "OFFLINE"
   }
 
-  Surface(
-    shape = RoundedCornerShape(100.dp),
-    color = container,
-  ) {
+  Surface(shape = RoundedCornerShape(100.dp), color = container) {
     Text(
       label,
       modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
@@ -283,9 +306,13 @@ private fun BackendStatusPill(backend: ShaderLabBackendState) {
 private fun ComparisonDock(
   backend: ShaderLabBackendState,
   commandApi: ShaderLabCommandApi,
+  referenceMode: Boolean,
 ) {
   Row(
-    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .alpha(if (referenceMode) 0f else 1f)
+      .padding(horizontal = 14.dp, vertical = 6.dp),
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     OutlinedButton(
@@ -306,11 +333,15 @@ private fun ComparisonDock(
 private fun StudioNavigationRail(
   groups: List<ShaderLabGroup>,
   selectedGroup: ShaderLabGroup,
+  referenceMode: Boolean,
   onSelect: (ShaderLabGroup) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   Column(
-    modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 12.dp),
+    modifier = modifier
+      .alpha(if (referenceMode) 0f else 1f)
+      .verticalScroll(rememberScrollState())
+      .padding(horizontal = 10.dp, vertical = 12.dp),
     verticalArrangement = Arrangement.spacedBy(7.dp),
   ) {
     Text(
@@ -328,17 +359,13 @@ private fun StudioNavigationRail(
           onClick = { onSelect(group) },
           modifier = Modifier.fillMaxWidth(),
           contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
-        ) {
-          Text(prettyGroup(group), modifier = Modifier.fillMaxWidth())
-        }
+        ) { Text(prettyGroup(group), modifier = Modifier.fillMaxWidth()) }
       } else {
         OutlinedButton(
           onClick = { onSelect(group) },
           modifier = Modifier.fillMaxWidth(),
           contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
-        ) {
-          Text(prettyGroup(group), modifier = Modifier.fillMaxWidth())
-        }
+        ) { Text(prettyGroup(group), modifier = Modifier.fillMaxWidth()) }
       }
     }
   }
@@ -349,10 +376,15 @@ private fun StudioNavigationRail(
 private fun CompactGroupStrip(
   groups: List<ShaderLabGroup>,
   selectedGroup: ShaderLabGroup,
+  referenceMode: Boolean,
   onSelect: (ShaderLabGroup) -> Unit,
 ) {
   Row(
-    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .alpha(if (referenceMode) 0f else 1f)
+      .horizontalScroll(rememberScrollState())
+      .padding(horizontal = 12.dp, vertical = 8.dp),
     horizontalArrangement = Arrangement.spacedBy(7.dp),
   ) {
     groups.forEach { group ->
@@ -373,6 +405,8 @@ private fun StudioEditorPane(
   visibleControls: List<ShaderLabControlSpec>,
   editingEnabled: Boolean,
   pendingConfirmation: ShaderLabActionId?,
+  tuningControl: ShaderLabControlId?,
+  onTuningControlChange: (ShaderLabControlId?) -> Unit,
   onPendingConfirmation: (ShaderLabActionId?) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -380,16 +414,21 @@ private fun StudioEditorPane(
   val actions = ShaderLabControlCatalog.actions.filter { action ->
     action.group == group && action.id != ShaderLabActionId.BYPASS && action.id != ShaderLabActionId.PREVIEW_TOGGLE_FALLBACK
   }
+  val referenceMode = tuningControl != null
+  val curveFocused = tuningControl in CURVE_CONTROL_IDS
 
   Column(
     modifier = modifier.verticalScroll(rememberScrollState()).padding(14.dp),
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
-    GroupHeader(group = group, controlCount = controls.size, actionCount = actions.size)
+    Box(Modifier.alpha(if (referenceMode) 0f else 1f)) {
+      GroupHeader(group = group, controlCount = controls.size, actionCount = actions.size)
+    }
 
     backend.lastError?.let { error ->
       Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        modifier = Modifier.alpha(if (referenceMode) 0f else 1f),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)),
         shape = RoundedCornerShape(14.dp),
       ) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
@@ -401,26 +440,34 @@ private fun StudioEditorPane(
 
     if (group in CURVE_GROUPS) {
       Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)),
+        modifier = Modifier.alpha(if (referenceMode && !curveFocused) 0f else 1f),
+        colors = CardDefaults.cardColors(
+          containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (curveFocused) 0.34f else 0.46f),
+        ),
         shape = RoundedCornerShape(18.dp),
       ) {
         ShaderCurveEditor(
           group = group,
           values = backend.values,
           enabled = editingEnabled,
-          onValueChange = { id, value ->
-            commandApi.execute(ShaderLabCommand.SetValue(id, value))
-          },
+          onDragControlChange = onTuningControlChange,
+          onValueChange = { id, value -> commandApi.execute(ShaderLabCommand.SetValue(id, value)) },
           modifier = Modifier.padding(12.dp),
         )
       }
     }
 
     controls.forEach { spec ->
+      val focused = tuningControl == spec.id
       ShaderLabSliderCard(
         spec = spec,
         backendValue = backend.values[spec.id] ?: spec.defaultValue,
         enabled = editingEnabled,
+        focused = focused,
+        dimmed = referenceMode && !focused,
+        onDragStateChange = { dragging ->
+          onTuningControlChange(if (dragging) spec.id else null)
+        },
         onValueChange = { value ->
           if (spec.id == ShaderLabControlId.MORPH_AMOUNT) {
             val from = presetRef(backend.values[ShaderLabControlId.MORPH_FROM] ?: 1.0)
@@ -436,6 +483,7 @@ private fun StudioEditorPane(
     if (group == ShaderLabGroup.COMPARE && actions.isEmpty()) {
       Text(
         "Bypass and press-and-hold original stay pinned above so comparison is always one action away.",
+        modifier = Modifier.alpha(if (referenceMode) 0f else 1f),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
@@ -449,10 +497,8 @@ private fun StudioEditorPane(
             actionCommand(action, backend)?.let(commandApi::execute)
             onPendingConfirmation(null)
           },
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          Text("CONFIRM • ${action.label}")
-        }
+          modifier = Modifier.fillMaxWidth().alpha(if (referenceMode) 0f else 1f),
+        ) { Text("CONFIRM • ${action.label}") }
       } else {
         OutlinedButton(
           onClick = {
@@ -463,15 +509,14 @@ private fun StudioEditorPane(
               onPendingConfirmation(null)
             }
           },
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          Text(action.label)
-        }
+          modifier = Modifier.fillMaxWidth().alpha(if (referenceMode) 0f else 1f),
+        ) { Text(action.label) }
       }
     }
 
     if (!editingEnabled && (controls.isNotEmpty() || group in CURVE_GROUPS)) {
       Surface(
+        modifier = Modifier.alpha(if (referenceMode) 0f else 1f),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
       ) {
@@ -496,26 +541,16 @@ private fun GroupHeader(
   controlCount: Int,
   actionCount: Int,
 ) {
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    verticalAlignment = Alignment.Top,
-  ) {
+  Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
     Column(Modifier.weight(1f)) {
-      Text(
-        prettyGroup(group),
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Bold,
-      )
+      Text(prettyGroup(group), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
       Text(
         groupSubtitle(group),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
     }
-    Surface(
-      shape = RoundedCornerShape(100.dp),
-      color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
+    Surface(shape = RoundedCornerShape(100.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.74f)) {
       Text(
         buildString {
           append(controlCount)
@@ -583,6 +618,9 @@ private fun ShaderLabSliderCard(
   spec: ShaderLabControlSpec,
   backendValue: Double,
   enabled: Boolean,
+  focused: Boolean,
+  dimmed: Boolean,
+  onDragStateChange: (Boolean) -> Unit,
   onValueChange: (Double) -> Unit,
 ) {
   var localValue by remember(spec.id) { mutableDoubleStateOf(spec.clamp(backendValue)) }
@@ -598,7 +636,10 @@ private fun ShaderLabSliderCard(
   }
 
   Card(
-    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)),
+    modifier = Modifier.alpha(if (dimmed) 0f else 1f),
+    colors = CardDefaults.cardColors(
+      containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (focused) 0.30f else 0.42f),
+    ),
     shape = RoundedCornerShape(16.dp),
   ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp)) {
@@ -613,6 +654,7 @@ private fun ShaderLabSliderCard(
           )
           Text(
             "${spec.id.legacyKey} • normal step ${spec.format(spec.normalStep)}",
+            modifier = Modifier.alpha(if (focused) 0.28f else 1f),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -621,7 +663,7 @@ private fun ShaderLabSliderCard(
         }
         Surface(
           shape = RoundedCornerShape(10.dp),
-          color = MaterialTheme.colorScheme.primaryContainer,
+          color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (focused) 0.96f else 0.82f),
         ) {
           Text(
             valueLabel(spec, localValue),
@@ -633,29 +675,35 @@ private fun ShaderLabSliderCard(
         TextButton(
           onClick = { applyValue(spec.defaultValue) },
           enabled = enabled,
+          modifier = Modifier.alpha(if (focused) 0f else 1f),
           contentPadding = PaddingValues(horizontal = 8.dp),
         ) { Text("RESET") }
       }
 
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(
           onClick = { applyValue(localValue - spec.normalStep) },
           enabled = enabled,
-          modifier = Modifier.width(46.dp).height(40.dp),
+          modifier = Modifier.width(46.dp).height(40.dp).alpha(if (focused) 0f else 1f),
           contentPadding = PaddingValues(0.dp),
         ) { Text("−", style = MaterialTheme.typography.titleMedium) }
 
         Slider(
           value = localValue.toFloat(),
           onValueChange = { raw ->
-            dragging = true
+            if (!dragging) {
+              dragging = true
+              onDragStateChange(true)
+            }
             localValue = spec.clamp(raw.toDouble())
             onValueChange(localValue)
           },
-          onValueChangeFinished = { dragging = false },
+          onValueChangeFinished = {
+            if (dragging) {
+              dragging = false
+              onDragStateChange(false)
+            }
+          },
           valueRange = spec.minValue.toFloat()..spec.maxValue.toFloat(),
           steps = if (spec.integer) max(0, (spec.maxValue - spec.minValue).roundToInt() - 1) else 0,
           enabled = enabled,
@@ -665,7 +713,7 @@ private fun ShaderLabSliderCard(
         OutlinedButton(
           onClick = { applyValue(localValue + spec.normalStep) },
           enabled = enabled,
-          modifier = Modifier.width(46.dp).height(40.dp),
+          modifier = Modifier.width(46.dp).height(40.dp).alpha(if (focused) 0f else 1f),
           contentPadding = PaddingValues(0.dp),
         ) { Text("+", style = MaterialTheme.typography.titleMedium) }
       }
@@ -678,6 +726,7 @@ private fun ShaderCurveEditor(
   group: ShaderLabGroup,
   values: Map<ShaderLabControlId, Double>,
   enabled: Boolean,
+  onDragControlChange: (ShaderLabControlId?) -> Unit,
   onValueChange: (ShaderLabControlId, Double) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -750,13 +799,16 @@ private fun ShaderCurveEditor(
               active?.let { id ->
                 val spec = ShaderLabControlCatalog.spec(id)
                 dragValue = values[id] ?: spec.defaultValue
+                onDragControlChange(id)
               }
             },
             onDragEnd = {
+              onDragControlChange(null)
               active = null
               dragValue = null
             },
             onDragCancel = {
+              onDragControlChange(null)
               active = null
               dragValue = null
             },
@@ -806,8 +858,7 @@ private fun ShaderCurveEditor(
 
         if (isLuma) {
           val pivot = (values[ShaderLabControlId.LUMA_PIVOT] ?: 0.18).coerceIn(0.0, 1.0)
-          val xs = listOf(pivot, 0.5, 0.85)
-          xs.forEach { x ->
+          listOf(pivot, 0.5, 0.85).forEach { x ->
             val y = toneCurve(values, x)
             drawCircle(handle, radius = 8f, center = Offset((x * w).toFloat(), ((1.0 - y) * h).toFloat()))
           }
@@ -955,4 +1006,13 @@ private val CURVE_GROUPS = setOf(
   ShaderLabGroup.LUMA,
   ShaderLabGroup.CHROMA_GATES,
   ShaderLabGroup.COLOR_VOLUME,
+)
+
+private val CURVE_CONTROL_IDS = setOf(
+  ShaderLabControlId.LUMA_PIVOT,
+  ShaderLabControlId.LUMA_CONTRAST,
+  ShaderLabControlId.LUMA_HIGHLIGHT,
+  ShaderLabControlId.BASE_CHROMA,
+  ShaderLabControlId.MID_CHROMA,
+  ShaderLabControlId.BRIGHT_CHROMA,
 )
