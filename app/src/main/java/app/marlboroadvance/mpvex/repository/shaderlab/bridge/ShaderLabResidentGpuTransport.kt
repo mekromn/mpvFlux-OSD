@@ -12,16 +12,11 @@ import kotlin.math.roundToLong
 /**
  * R08 resident vo=gpu parameter transport.
  *
- * The shader file and hook remain resident. The R08 native mpv patch treats a
- * glsl-shader-opts-only update as an in-place user-shader PARAM refresh, so an
- * ordinary edit is just one option write/read-back and the next rendered frame
- * receives the new GPU uniform values. No shader source is regenerated, no
- * runtime A/B file is touched, and no shader-list detach/reattach occurs while
- * dragging a live control.
- *
- * Bypass/hold-original uses the private R08_BYPASS resident PARAM. This keeps
- * the hook resident as well; Lua still owns restoration of direct mpv picture
- * properties for a true original comparison.
+ * Ordinary slider movement is deliberately the shortest possible path:
+ * one bare `glsl-shader-opts` property write and no synchronous read-back.
+ * The production R08 probe performs verification after the gesture settles.
+ * This mirrors the proven direct-property path used by mpv picture controls
+ * and keeps JNI/property reads off the pointer-event hot path.
  */
 internal class ShaderLabResidentGpuTransport(
   private val transport: ShaderLabMpvTransport,
@@ -44,20 +39,14 @@ internal class ShaderLabResidentGpuTransport(
   }
 
   /**
-   * Publish the complete resident parameter set. The native vo=gpu patch
-   * updates the already-parsed hook's uniform values in-place. On failure the
-   * previous complete set is restored without touching glsl-shaders.
+   * Publish the complete resident parameter set with one mpv write. Verification
+   * is intentionally debounced outside this function so dragging cannot stall
+   * playback on a synchronous JNI/property round-trip.
    */
   fun publish(values: Map<ShaderLabControlId, Double>) {
     val normalized = ShaderLabControlCatalog.normalizeValues(values)
     val nextOptions = encodeOptions(normalized)
-    val previousOptions = lastGoodOptions
-    try {
-      setAndVerifyOptions(optionsForView(nextOptions))
-    } catch (error: Throwable) {
-      runCatching { setAndVerifyOptions(optionsForView(previousOptions)) }
-      throw error
-    }
+    setOptionsFast(optionsForView(nextOptions))
     lastGoodValues = normalized
     lastGoodOptions = nextOptions
     authoritative = true
@@ -66,12 +55,8 @@ internal class ShaderLabResidentGpuTransport(
   /**
    * Legacy preset/state actions may still alter Lua's value bank. Adopt that
    * bank at an explicit compatibility boundary, then publish it through the
-   * same resident live-uniform path. If the SDR resident hook is already
-   * attached, adoption must not rebuild or churn the shader list.
-   *
-   * The incoming bank is authoritative only after mpv accepts/reads it back.
-   * A failed adoption restores the previous resident PARAM set and Android's
-   * previous last-known-good value bank.
+   * same resident path. This is not a pointer-event hot path, so verify the
+   * accepted option set synchronously here.
    */
   fun adoptLegacyValues(values: Map<ShaderLabControlId, Double>, sourceKind: ShaderLabSourceKind) {
     val previousValues = lastGoodValues
@@ -122,13 +107,13 @@ internal class ShaderLabResidentGpuTransport(
 
   /**
    * Comparison state is a private uniform branch, never a shader-list mutation.
-   * Direct mpv properties are still restored/reapplied by the legacy controller.
+   * Keep this latency-sensitive path to the same single bare property write.
    */
   fun setOriginalView(active: Boolean, sourceKind: ShaderLabSourceKind) {
     if (originalViewActive == active && sourceKind == attachedSourceKind) return
     originalViewActive = active
     if (sourceKind == ShaderLabSourceKind.SDR && residentShaderIsAttached()) {
-      setAndVerifyOptions(optionsForView(lastGoodOptions))
+      setOptionsFast(optionsForView(lastGoodOptions))
     } else {
       reconcileSource(sourceKind)
     }
@@ -143,8 +128,8 @@ internal class ShaderLabResidentGpuTransport(
         removeManagedShader(LEGACY_RUNTIME_A_PATH)
         removeManagedShader(LEGACY_RUNTIME_B_PATH)
 
-        // Publish values before first attachment. Once attached, subsequent
-        // PARAM/bypass changes are native in-place uniform updates.
+        // Publish and verify before first attachment. Once attached, ordinary
+        // PARAM/bypass changes use the no-readback fast path above.
         setAndVerifyOptions(optionsForView(lastGoodOptions))
         ensureResidentShaderAttached()
       }
@@ -170,8 +155,13 @@ internal class ShaderLabResidentGpuTransport(
   private fun optionsForView(base: String): String =
     "$base,$INTERNAL_BYPASS_PARAM=${if (originalViewActive) 1 else 0}"
 
+  /** Canonical runtime option property, matching the working mpv picture-control write path. */
+  private fun setOptionsFast(options: String) {
+    transport.command("set", GLSL_SHADER_OPTS_BARE_PROPERTY, options)
+  }
+
   private fun setAndVerifyOptions(options: String) {
-    transport.command("set", GLSL_SHADER_OPTS_PROPERTY, options)
+    setOptionsFast(options)
     verifyShaderOptions(options)
   }
 
@@ -191,10 +181,13 @@ internal class ShaderLabResidentGpuTransport(
 
   private fun verifyShaderOptions(expected: String) {
     val actual =
-      transport.getString(GLSL_SHADER_OPTS_PROPERTY)
-        ?: transport.getString(GLSL_SHADER_OPTS_BARE_PROPERTY)
+      transport.getString(GLSL_SHADER_OPTS_BARE_PROPERTY)
+        ?: transport.getString(GLSL_SHADER_OPTS_PROPERTY)
         ?: run {
-          if (transport is ShaderLabR08ProbedMpvTransport) {
+          if (
+            transport is ShaderLabR08ProbedMpvTransport ||
+              transport is ShaderLabR08DebouncedProbedMpvTransport
+          ) {
             error("mpv did not expose a glsl-shader-opts read-back after resident PARAM publish")
           }
           return
@@ -234,8 +227,9 @@ internal class ShaderLabResidentGpuTransport(
   }
 
   companion object {
-    /** Explicit runtime option-property path; preferred over the bare option name. */
+    /** `options/...` remains useful as a read-back alias. */
     const val GLSL_SHADER_OPTS_PROPERTY = "options/glsl-shader-opts"
+    /** Bare property is the canonical live-write path. */
     const val GLSL_SHADER_OPTS_BARE_PROPERTY = "glsl-shader-opts"
     const val GLSL_SHADERS_PROPERTY = "options/glsl-shaders"
     const val GLSL_SHADERS_LIST_OPTION = "glsl-shaders"
