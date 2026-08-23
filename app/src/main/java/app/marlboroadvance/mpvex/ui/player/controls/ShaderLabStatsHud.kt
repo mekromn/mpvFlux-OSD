@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -111,7 +112,7 @@ fun ShaderLabStatsHud(
           ) {
             Text(
               "CHROVELO • STATS FOR NERDS",
-              color = Color(0xFFFFFFFF),
+              color = Color.White,
               fontWeight = FontWeight.Black,
               style = MaterialTheme.typography.labelLarge,
             )
@@ -148,7 +149,7 @@ private fun HudRow(label: String, value: String) {
     Text(
       value,
       modifier = Modifier.weight(1f),
-      color = Color(0xFFFFFFFF),
+      color = Color.White,
       fontFamily = FontFamily.Monospace,
       style = MaterialTheme.typography.labelSmall,
       maxLines = 2,
@@ -174,14 +175,14 @@ private fun readHudSnapshot(): ShaderLabHudSnapshot {
     return null
   }
 
-  val shaders = text("options/glsl-shaders", "glsl-shaders").orEmpty()
-  val opts = text("options/glsl-shader-opts", "glsl-shader-opts").orEmpty()
+  val shaders = text("glsl-shaders", "options/glsl-shaders").orEmpty()
+  val opts = text("glsl-shader-opts", "options/glsl-shader-opts").orEmpty()
   val preview = if (opts.length <= 145) opts else opts.take(142) + "…"
 
   return ShaderLabHudSnapshot(
     vo = text("current-vo", "vo") ?: "—",
-    gpu = text("options/gpu-api", "gpu-api") ?: "—",
-    context = text("options/gpu-context", "gpu-context") ?: "—",
+    gpu = text("gpu-api", "options/gpu-api") ?: "—",
+    context = text("gpu-context", "options/gpu-context") ?: "—",
     shaderAttached = shaders.contains(ShaderLabResidentGpuTransport.RESIDENT_SHADER_PATH),
     paramCount = opts.split(',').count { it.contains('=') },
     glslOptsPreview = preview.ifBlank { "—" },
