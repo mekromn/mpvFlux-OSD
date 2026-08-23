@@ -4,7 +4,7 @@ import android.content.Context
 import app.marlboroadvance.mpvex.repository.shaderlab.ShaderLabEngineInstaller
 import app.marlboroadvance.mpvex.repository.shaderlab.ShaderLabWorkspaceManager
 import app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge
-import app.marlboroadvance.mpvex.repository.shaderlab.bridge.createR08InstrumentedMpvShaderLabBridge
+import app.marlboroadvance.mpvex.repository.shaderlab.bridge.createR08LowOverheadMpvShaderLabBridge
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommandApi
 import app.marlboroadvance.mpvex.repository.shaderlab.command.ShaderLabCommandBackend
 import app.marlboroadvance.mpvex.ui.player.controls.ShaderLabUiController
@@ -15,7 +15,7 @@ val ShaderLabModule =
     single { ShaderLabWorkspaceManager(get()) }
     single { ShaderLabEngineInstaller(context = get(), workspaceManager = get()) }
     single {
-      createR08InstrumentedMpvShaderLabBridge(
+      createR08LowOverheadMpvShaderLabBridge(
         context = get<Context>(),
         engineInstaller = get<ShaderLabEngineInstaller>(),
       )
