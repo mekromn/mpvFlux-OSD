@@ -30,7 +30,9 @@ import androidx.compose.ui.unit.dp
 import app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge
 import app.marlboroadvance.mpvex.repository.shaderlab.bridge.ShaderLabResidentGpuTransport
 import `is`.xyz.mpv.MPVLib
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import org.koin.compose.koinInject
 
 private data class ShaderLabHudSnapshot(
@@ -47,9 +49,9 @@ private data class ShaderLabHudSnapshot(
 /**
  * Device-facing R08 Stats for Nerds HUD.
  *
- * It intentionally opens by default with Shader Lab. The user should never
- * need to know a hidden gesture or hunt for a low-contrast launcher while we
- * are validating the resident PARAM path on-device.
+ * Stats are deliberately opt-in. Reading the diagnostic mpv properties is
+ * useful during R08 validation, but opening Shader Lab itself must remain a
+ * zero-JNI, zero-renderer-mutation UI operation.
  */
 @Composable
 fun ShaderLabStatsHud(
@@ -60,18 +62,17 @@ fun ShaderLabStatsHud(
   val studioVisible by uiController.visible.collectAsState()
   val backend by bridge.state.collectAsState()
 
-  var open by remember { mutableStateOf(true) }
+  var open by remember { mutableStateOf(false) }
   var snapshot by remember { mutableStateOf(ShaderLabHudSnapshot()) }
 
-  LaunchedEffect(studioVisible) {
-    if (studioVisible) open = true
-  }
-
   LaunchedEffect(studioVisible, open) {
-    if (!studioVisible) return@LaunchedEffect
-    while (studioVisible) {
-      snapshot = readHudSnapshot()
-      delay(if (open) 350L else 1000L)
+    if (!studioVisible || !open) return@LaunchedEffect
+    while (studioVisible && open) {
+      // MPVLib property access is synchronous JNI. Keep diagnostic polling off
+      // Compose's main dispatcher so it cannot block touch, layout, animation,
+      // or the first Shader Lab frame.
+      snapshot = withContext(Dispatchers.IO) { readHudSnapshot() }
+      delay(750L)
     }
   }
 
