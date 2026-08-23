@@ -45,8 +45,8 @@ import org.koin.compose.koinInject
  *
  * This intentionally lives outside the Studio drawer so it can remain visible
  * over the video while a shader control is being adjusted. The compact view is
- * renderer-first; EXPAND exposes the transport and frame-timing details that
- * are useful when validating the R08 resident PARAM path on a real device.
+ * renderer-first; MORE exposes transport and frame-timing details useful when
+ * validating the R08 resident PARAM path on a real device.
  */
 @Composable
 fun ShaderLabStatsOverlay(
@@ -114,9 +114,9 @@ fun ShaderLabStatsOverlay(
             }
 
             StatRow("Renderer", stats.activeVo ?: "—", highlight = true)
-            if (stats.requestedVo != null && stats.requestedVo != stats.activeVo) {
-              StatRow("Requested VO", stats.requestedVo)
-            }
+            stats.requestedVo
+              ?.takeIf { it != stats.activeVo }
+              ?.let { requested -> StatRow("Requested VO", requested) }
             StatRow("GPU", listOfNotNull(stats.gpuApi, stats.gpuContext).joinToString(" • ").ifBlank { "—" })
             StatRow("HW decode", stats.hwdecCurrent ?: "—")
             StatRow("Source", stats.sourceLine(backend))
