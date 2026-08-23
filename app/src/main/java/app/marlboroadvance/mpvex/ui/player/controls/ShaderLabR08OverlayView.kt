@@ -97,7 +97,7 @@ class ShaderLabR08OverlayView @JvmOverloads constructor(
         CompositionLocalProvider(LocalContentColor provides Color(0xFFF8F5FC)) {
           Box(Modifier.fillMaxSize()) {
             ShaderLabStudioOverlay()
-            ShaderLabStatsOverlay()
+            ShaderLabStatsHud()
           }
         }
       }
