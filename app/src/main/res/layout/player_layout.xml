@@ -16,17 +16,18 @@
         android:layout_height="match_parent" />
 
     <!--
-      R08 resident-parameter test surface. Kept separate from the legacy Lua
-      OSD so parameter testing cannot accidentally validate the old shader
-      rewrite/A-B swap path instead of the resident vo=gpu PARAM transport.
+      R08 Shader Lab Studio host. The Compose root now owns the full player
+      bounds so it can choose a wide right-side workstation in landscape or a
+      compact bottom Studio in portrait. Only the visible Studio surface handles
+      pointer/key interaction; the host remains transparent around it.
     -->
     <app.marlboroadvance.mpvex.ui.player.controls.ShaderLabR08OverlayView
         android:id="@+id/shader_lab_r08_overlay"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="20dp"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
