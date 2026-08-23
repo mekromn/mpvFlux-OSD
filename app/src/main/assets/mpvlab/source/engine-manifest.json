@@ -52,7 +52,7 @@
       "sha256": "1663f54be13678688f4babfd68b360c1797b1057101b3c460c663ea66694c988"
     },
     {
-      "bytes": 11163,
+      "bytes": 11348,
       "path": "shaders/pixel9-perceptual-expansion-resident-v3.1.glsl",
       "sha256": "e4fcac1497ab40b1d07de0955e969aaaa060c95f2b63e5ec007c4b86524c2d7a"
     },
