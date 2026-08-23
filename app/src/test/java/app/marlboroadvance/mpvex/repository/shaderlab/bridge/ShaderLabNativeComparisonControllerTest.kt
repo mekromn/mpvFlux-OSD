@@ -23,7 +23,10 @@ class ShaderLabNativeComparisonControllerTest {
     compare.setPreviewOriginal(false, ShaderLabSourceKind.SDR)
 
     assertFalse(mpv.commands.any { it.firstOrNull() == "change-list" })
-    val optionWrites = mpv.commands.filter { it.take(2) == listOf("set", "options/glsl-shader-opts") }
+    val optionWrites =
+      mpv.commands.filter {
+        it.take(2) == listOf("set", ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY)
+      }
     assertTrue(optionWrites.any { it.last().contains("R08_BYPASS=1") })
     assertTrue(optionWrites.any { it.last().contains("R08_BYPASS=0") })
   }
@@ -99,7 +102,7 @@ private class FakeCompareMpvTransport : ShaderLabMpvTransport {
         val value = command[2]
         if (key == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) {
           strings[key] = value
-          strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY] = value
+          strings[ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_OPTIONS_PROPERTY] = value
         } else {
           value.toDoubleOrNull()?.let { doubles[key] = it }
         }
