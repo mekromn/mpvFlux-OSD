@@ -53,11 +53,9 @@ internal class ShaderLabR08DebouncedProbedMpvTransport(
       args.getOrNull(0) == "change-list" && args.getOrNull(1) == "glsl-shaders"
     if (isShaderListMutation) runCatching { probe.shaderListMutation() }
 
-    val optionName = args.getOrNull(1)
     val isResidentPublish =
       args.getOrNull(0) == "set" &&
-        (optionName == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY ||
-          optionName == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY) &&
+        args.getOrNull(1) == ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY &&
         args.size >= 3
 
     if (!isResidentPublish) {
@@ -86,8 +84,8 @@ internal class ShaderLabR08DebouncedProbedMpvTransport(
 
     val sampleStart = nanoTime()
     val readback =
-      safeString(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_BARE_PROPERTY)
-        ?: safeString(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY)
+      safeString(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_PROPERTY)
+        ?: safeString(ShaderLabResidentGpuTransport.GLSL_SHADER_OPTS_OPTIONS_PROPERTY)
     val sample =
       ShaderLabR08ResidentPublishSample(
         requestedOptions = pending.requestedOptions,
