@@ -7,7 +7,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.marlboroadvance.mpvex.preferences.PlayerButton
-import app.marlboroadvance.mpvex.repository.shaderlab.bridge.MpvShaderLabBridge
 import app.marlboroadvance.mpvex.ui.player.PlayerActivity
 import app.marlboroadvance.mpvex.ui.player.PlayerViewModel
 import app.marlboroadvance.mpvex.ui.player.Sheets
@@ -42,7 +41,6 @@ fun RenderConfigurablePlayerButton(
   buttonSize: Dp = 48.dp,
 ) {
   val shaderLabUi = koinInject<ShaderLabUiController>()
-  val shaderLabBridge = koinInject<MpvShaderLabBridge>()
   val clickEvent = LocalPlayerButtonsClickEvent.current
 
   when (button) {
@@ -63,16 +61,10 @@ fun RenderConfigurablePlayerButton(
         icon = button.icon,
         onClick = {
           clickEvent()
-          // The MPV wrapper normally attaches Shader Lab from
-          // MPVView.observeProperties(). Device testing showed that the
-          // renderer-parity AAR can reach playback while that lifecycle hook
-          // is missed, leaving the Studio bound to the same Koin singleton but
-          // with attached=false. Repair that boundary synchronously before the
-          // first Studio frame. MpvShaderLabBridge.attach() already handles a
-          // previous attachment by replacing its observer safely.
-          if (!shaderLabUi.visible.value) {
-            shaderLabBridge.attach()
-          }
+          // Opening/closing Shader Lab is a UI-only operation. The bridge is
+          // attached once from MPVView.observeProperties() after libmpv init.
+          // Never perform observer replacement, shader reload, or synchronous
+          // mpv transport repair from a Compose click callback.
           shaderLabUi.toggle()
         },
         color = controlColor,
