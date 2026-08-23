@@ -5,9 +5,11 @@ import android.util.AttributeSet
 import android.view.View
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.AbstractComposeView
@@ -24,12 +26,9 @@ import org.koin.core.context.GlobalContext
 /**
  * Full-player host for the R08 Shader Lab Studio.
  *
- * The Studio needs the complete player bounds to choose a wide landscape
- * workstation or compact portrait layout. A full-size Android sibling must not
- * intercept player gestures while the Studio is closed, so the host is kept
- * GONE at the Android View level until ShaderLabUiController says it is open.
- * While open the Studio is intentionally modal; Close restores the normal
- * player/control touch path immediately.
+ * Shader Lab is always rendered with its own high-contrast dark-glass palette.
+ * It must never inherit a dark/black accent from the app's light theme because
+ * that makes interactive text disappear over video.
  */
 class ShaderLabR08OverlayView @JvmOverloads constructor(
   context: Context,
@@ -69,40 +68,37 @@ class ShaderLabR08OverlayView @JvmOverloads constructor(
   @Composable
   override fun Content() {
     MpvexTheme {
-      // Shader Lab is intentionally a dark translucent surface over live video.
-      // If the rest of the app is using its light theme, inheriting that scheme
-      // directly produces black onSurface/onSurfaceVariant text over the glass
-      // panel. Keep the app's accent identity while giving this video overlay a
-      // stable high-contrast dark content palette in every app appearance mode.
-      val appColors = MaterialTheme.colorScheme
       val shaderLabColors = darkColorScheme(
-        primary = appColors.primary,
-        onPrimary = Color.White,
-        primaryContainer = appColors.primary.copy(alpha = 0.30f),
-        onPrimaryContainer = Color.White,
-        secondary = appColors.secondary,
-        onSecondary = Color.White,
-        secondaryContainer = Color(0xFF29242F),
-        onSecondaryContainer = Color.White,
-        tertiary = appColors.tertiary,
-        onTertiary = Color.White,
-        background = Color(0xFF0E0D12),
-        onBackground = Color(0xFFF7F4FA),
-        surface = Color(0xFF141218),
-        onSurface = Color(0xFFF7F4FA),
-        surfaceVariant = Color(0xFF25212B),
-        onSurfaceVariant = Color(0xFFD1CBD7),
-        outline = Color(0xFF938C9C),
-        error = Color(0xFFFF716C),
-        onError = Color.White,
+        primary = Color(0xFFC9B8FF),
+        onPrimary = Color(0xFF160B33),
+        primaryContainer = Color(0xFF4C2E82),
+        onPrimaryContainer = Color(0xFFF7F2FF),
+        secondary = Color(0xFF80E9FF),
+        onSecondary = Color(0xFF001F25),
+        secondaryContainer = Color(0xFF17343B),
+        onSecondaryContainer = Color(0xFFE5FAFF),
+        tertiary = Color(0xFFFFB5E8),
+        onTertiary = Color(0xFF321027),
+        background = Color(0xFF0B0A0F),
+        onBackground = Color(0xFFF8F5FC),
+        surface = Color(0xFF121016),
+        onSurface = Color(0xFFF8F5FC),
+        surfaceVariant = Color(0xFF29252F),
+        onSurfaceVariant = Color(0xFFDCD5E3),
+        outline = Color(0xFFAAA2B3),
+        outlineVariant = Color(0xFF625B69),
+        error = Color(0xFFFF8A84),
+        onError = Color(0xFF3A0000),
         errorContainer = Color(0xFF6B1B1B),
         onErrorContainer = Color(0xFFFFE9E7),
       )
 
       MaterialTheme(colorScheme = shaderLabColors) {
-        Box(Modifier.fillMaxSize()) {
-          ShaderLabStudioOverlay()
-          ShaderLabStatsOverlay()
+        CompositionLocalProvider(LocalContentColor provides Color(0xFFF8F5FC)) {
+          Box(Modifier.fillMaxSize()) {
+            ShaderLabStudioOverlay()
+            ShaderLabStatsOverlay()
+          }
         }
       }
     }
