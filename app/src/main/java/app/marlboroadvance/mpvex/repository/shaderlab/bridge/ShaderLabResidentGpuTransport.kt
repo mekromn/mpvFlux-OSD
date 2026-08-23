@@ -128,8 +128,17 @@ internal class ShaderLabResidentGpuTransport(
         removeManagedShader(LEGACY_RUNTIME_A_PATH)
         removeManagedShader(LEGACY_RUNTIME_B_PATH)
 
-        // Publish and verify before first attachment. Once attached, ordinary
-        // PARAM/bypass changes use the no-readback fast path above.
+        // A path appearing in glsl-shaders proves only that the option list
+        // contains the path; it does not prove mpv successfully parsed and
+        // installed the hook. On bridge initialization force exactly one
+        // remove/re-append after the engine installer has verified the shader
+        // file. This guarantees the current on-disk resident source is parsed
+        // by the active vo=gpu instance. Ordinary slider changes never mutate
+        // the shader list.
+        if (force) removeManagedShader(RESIDENT_SHADER_PATH)
+
+        // Publish and verify before attachment so the freshly parsed hook sees
+        // the complete authoritative PARAM set immediately.
         setAndVerifyOptions(optionsForView(lastGoodOptions))
         ensureResidentShaderAttached()
       }
