@@ -23,6 +23,7 @@ Chat sessions can be interrupted, compacted, or forced into a new thread. The fi
 
 ## Imported/recovered records
 
+- `2026-08-23-fidelity-audit-priority.md` — current R08 device result, rendered-PARAM failure, full-codebase fidelity-audit priority override, audit commit, ranked-remediation order, and next execution state.
 - `2026-08-21-r08-continuity.md` — concise active R08 checkpoint and current renderer-parity blocker.
 - `2026-08-21-r08-recovered-chat-exports.md` — reconstructed source-controlled handoff from the two user-supplied August 21 ChatGPT exports, including the R08 implementation milestones, exact R07 renderer fingerprint, renderer-parity decision, upstream miner results, and job `96881103884` next action.
 
