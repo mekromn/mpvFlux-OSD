@@ -157,7 +157,7 @@ internal class ShaderLabResidentGpuTransport(
 
   /** Canonical runtime option property, matching the working mpv picture-control write path. */
   private fun setOptionsFast(options: String) {
-    transport.command("set", GLSL_SHADER_OPTS_BARE_PROPERTY, options)
+    transport.command("set", GLSL_SHADER_OPTS_PROPERTY, options)
   }
 
   private fun setAndVerifyOptions(options: String) {
@@ -173,16 +173,16 @@ internal class ShaderLabResidentGpuTransport(
 
   private fun residentShaderIsAttached(): Boolean {
     val shaderList =
-      transport.getString(GLSL_SHADERS_PROPERTY)
-        ?: transport.getString(GLSL_SHADERS_LIST_OPTION)
+      transport.getString(GLSL_SHADERS_LIST_OPTION)
+        ?: transport.getString(GLSL_SHADERS_PROPERTY)
         ?: return false
     return shaderList.contains(RESIDENT_SHADER_PATH)
   }
 
   private fun verifyShaderOptions(expected: String) {
     val actual =
-      transport.getString(GLSL_SHADER_OPTS_BARE_PROPERTY)
-        ?: transport.getString(GLSL_SHADER_OPTS_PROPERTY)
+      transport.getString(GLSL_SHADER_OPTS_PROPERTY)
+        ?: transport.getString(GLSL_SHADER_OPTS_OPTIONS_PROPERTY)
         ?: run {
           if (
             transport is ShaderLabR08ProbedMpvTransport ||
@@ -227,10 +227,12 @@ internal class ShaderLabResidentGpuTransport(
   }
 
   companion object {
-    /** `options/...` remains useful as a read-back alias. */
-    const val GLSL_SHADER_OPTS_PROPERTY = "options/glsl-shader-opts"
-    /** Bare property is the canonical live-write path. */
-    const val GLSL_SHADER_OPTS_BARE_PROPERTY = "glsl-shader-opts"
+    /** Canonical live/read property used everywhere in R08. */
+    const val GLSL_SHADER_OPTS_PROPERTY = "glsl-shader-opts"
+    /** Backward-compatible alias used by older tests/callers. */
+    const val GLSL_SHADER_OPTS_BARE_PROPERTY = GLSL_SHADER_OPTS_PROPERTY
+    /** mpv's options namespace is read-back fallback only. */
+    const val GLSL_SHADER_OPTS_OPTIONS_PROPERTY = "options/glsl-shader-opts"
     const val GLSL_SHADERS_PROPERTY = "options/glsl-shaders"
     const val GLSL_SHADERS_LIST_OPTION = "glsl-shaders"
     const val INTERNAL_BYPASS_PARAM = "R08_BYPASS"
