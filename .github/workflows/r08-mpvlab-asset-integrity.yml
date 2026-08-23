@@ -1,0 +1,59 @@
+name: R08 mpvLab Asset Integrity
+
+on:
+  push:
+    branches:
+      - agent/upstream-refactor
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  verify-mpvlab-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify manifest byte counts and hashes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("app/src/main/assets/mpvlab/source")
+          manifest = json.loads((root / "engine-manifest.json").read_text(encoding="utf-8"))
+          failures = []
+
+          for entry in manifest.get("files", []):
+              rel = entry["path"]
+              path = root / rel
+              if not path.is_file():
+                  failures.append(f"missing: {rel}")
+                  continue
+
+              data = path.read_bytes()
+              actual_bytes = len(data)
+              expected_bytes = int(entry["bytes"])
+              if actual_bytes != expected_bytes:
+                  failures.append(
+                      f"byte mismatch: {rel}: expected {expected_bytes}, got {actual_bytes}"
+                  )
+
+              actual_sha = hashlib.sha256(data).hexdigest()
+              expected_sha = entry["sha256"].lower()
+              if actual_sha != expected_sha:
+                  failures.append(
+                      f"hash mismatch: {rel}: expected {expected_sha}, got {actual_sha}"
+                  )
+
+          if failures:
+              print("mpvLab asset integrity FAILED")
+              for failure in failures:
+                  print(f"- {failure}")
+              raise SystemExit(1)
+
+          print(f"mpvLab asset integrity PASS: {len(manifest.get('files', []))} manifest files")
+          PY
