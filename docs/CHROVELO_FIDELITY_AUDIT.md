@@ -1,455 +1,618 @@
-# Chrovelo Maximum-Fidelity Audit
+# Chrovelo fidelity audit
 
-**Audit date:** 2026-08-23  
-**Audited branch:** `agent/upstream-refactor`  
-**Audited head at start:** `93f0383bacfcc73838b3874083cae0c0b3d79689`  
-**Target:** Google Pixel 9 Pro XL / Android 16  
-**Renderer invariant:** `vo=gpu` + Vulkan (`androidvk`)  
-**Current roadmap step:** R08 remains `IN_PROGRESS`
+I treated R07 only as a known-working comparator—not as perfect output.
 
-## Why this audit exists
+Scope covered:
 
-The goal is not to assume the inherited mpv/mpvFlux baseline is perfect. Chrovelo is intended to push playback fidelity to the practical limit of the target hardware while preserving the separately proven Pixel expanded-SDR brightness path. Any code, option, shader assumption, Android surface behavior, dependency pin, or hidden default that can unnecessarily alter, quantize, clip, resample, restrict, mis-tag, mistime, or obscure the final image is in scope.
+* All 431 tracked repository files at commit `93f0383b`
+* Kotlin playback and preference code
+* Lua controller and every GLSL shader
+* mpv configuration and managed-file installer
+* Build and release workflows
+* The committed native AAR
+* All nine supplied APKs
+* Exact pinned mpv `d54bad563`
+* Exact pinned FFmpeg `5ba2525c`
+* Exact pinned libplacebo `c93aa134`
+* Relevant newer upstream mpv changes
 
-A **fidelity robber** in this document means one of four things:
+No code was changed.
 
-1. **Destructive:** irreversibly discards source information or produces a known-wrong representation.
-2. **Silent processing:** changes pixels/cadence without being an explicit creative user choice.
-3. **Capability ceiling:** prevents the pipeline from using fidelity the hardware could otherwise preserve.
-4. **Unproven assumption:** may be correct, but is not measured/observable enough to trust in a maximum-fidelity build.
+## Critical problems
 
-Explicit creative operations such as Crop, Stretch, manual Zoom, or a deliberately selected color preset are not automatically bugs. They become audit findings when they can stack invisibly, survive inconsistently, or contaminate a reference/maximum-fidelity path.
+### 1. The current repository AAR cannot provide the renderer the app forces
 
-## Device state that triggered the priority change
+[MPVView.kt](sandbox:/workspace/scratch/6857edfc174a/mpvFlux-OSD/app/src/main/java/app/marlboroadvance/mpvex/ui/player/MPVView.kt) unconditionally selects:
 
-The 2026-08-23 Pixel device test after Lab-open stability work showed:
+```text
+vo=gpu
+gpu-context=androidvk
+gpu-api=vulkan
+```
 
-- Shader Lab opens and reports `LIVE`.
-- source: SDR / `bt.1886`;
-- VO: `gpu`;
-- resident shader: `ATTACHED`;
-- `PARAM opts`: `40`;
-- frame/decoder drops shown by the temporary HUD: `0 / 0`;
-- changing Luma Master / Chroma Master still produces **no visible rendered-pixel change**.
+But the committed arm64 `libmpv.so`:
 
-That is an R08 transport/renderer-consumption blocker, but the user explicitly directed that the full fidelity audit be completed **before** further slider repair. R08 therefore remains active; no roadmap pointer advances because of this audit.
+* Is only 7,699,456 bytes
+* Has SHA-256 `40a94d1a…`
+* Contains no `androidvk`
+* Contains no `pl_vulkan_create`
+* Contains no Shaderc compiler
+* Does not depend on `libvulkan.so`
 
-## Repository/upstream state checked before audit
+The R07 APK library:
 
-- fork `master`: `83e2b2f64c48abbdc1125cff626cfcbae230bfde`;
-- immediate upstream `Muhammedahmed18/mpvFlux`: `f2ed0153134925ad492744ea5330578194ec76a3`;
-- neither advanced relative to the documented baseline;
-- R07 mpv renderer cutoff remains `d54bad5636924ab3f39cb6e397b94b6aa8a7c433` (2026-02-25);
-- R07 libplacebo remains `c93aa134ab62365ce1177efff99b8e1e66a818e7`;
-- R07 FFmpeg remains `5ba2525c7affc29cbd99e6266946b382d3fffe8b`.
+* Is 12,087,976 bytes
+* Has SHA-256 `265ef6bd…`
+* Contains `androidvk`
+* Contains Vulkan/libplacebo renderer functions
+* Contains Shaderc
+* Depends on `libvulkan.so`
+
+All nine supplied APKs contain that same working R07 native library.
+
+Normal build and release workflows use the committed non-Vulkan AAR directly through [app/build.gradle.kts](sandbox:/workspace/scratch/6857edfc174a/mpvFlux-OSD/app/build.gradle.kts). Only specialized R08 parity workflows rebuild the proper renderer.
+
+This is likely the primary explanation for the latest ordinary-build black screen: the app explicitly requests a renderer that is absent from its packaged engine.
 
 ---
 
-# Ranked findings
+### 2. R07 does not produce true HDR output
 
-Severity is ordered `P0` (must address/prove first) through `P3` (lower-risk, diagnostic, or peripheral). `CONFIRMED` means the behavior is directly present in current source. `MEASURE` means the code exposes an unresolved fidelity ceiling that must be measured on the Pixel before changing it.
+The exact Android Vulkan implementation creates its swapchain with empty platform parameters:
 
-## P0 — destructive or reference-breaking
+* No target colorspace callback
+* No output-depth callback
+* No HDR metadata propagation
+* No Android dataspace selection
+* No display capability reporting
+* No functional Android `control` implementation
 
-### F001 — Optional `vf=format=yuv420p` is a destructive conversion — **P0 / CONFIRMED**
+The Vulkan frame contains colorspace information from libplacebo, but legacy `vo_gpu` does not propagate it into the destination FBO.
 
-**Evidence:** `app/src/main/java/app/marlboroadvance/mpvex/ui/player/MPVView.kt`
+Consequently, `vo_gpu` sees an unknown output:
 
-When `DecoderPreferences.useYUV420P` is enabled, Chrovelo installs `vf=format=yuv420p`.
+* Unknown target primaries become BT.709
+* PQ/HLG output becomes gamma 2.2
+* Unknown output peak becomes mpv reference white: 203 nits
+* HDR is tone-mapped to an SDR rendering target
+* Wide-gamut SDR is converted toward BT.709
+* No HDR or wide-gamut metadata reaches Android’s compositor
 
-**Why it robs fidelity:** this can force high-bit-depth, 4:2:2, 4:4:4, RGB, or otherwise richer decoded video through a 4:2:0 planar format. It is incompatible with a maximum-fidelity contract.
+The app also lacks `android:colorMode="wideColorGamut"` in [AndroidManifest.xml](sandbox:/workspace/scratch/6857edfc174a/mpvFlux-OSD/app/src/main/AndroidManifest.xml), and the underlying `SurfaceView` does not configure dataspace, HDR, preferred format, or frame rate.
 
-**Required action:** remove it from the maximum-fidelity path. If retained as a compatibility escape hatch, rename it as explicitly destructive, make it opt-in, and expose the negotiated before/after pixel formats.
+So “leave PQ/HLG alone” currently means only “do not apply the custom SDR shader.” Native mpv still transforms HDR to untagged SDR.
 
-### F002 — Default mpv `fast` profile leaks HDR-quality changes — **P0 / CONFIRMED**
-
-**Evidence:**
-
-- `app/src/main/java/app/marlboroadvance/mpvex/preferences/DecoderPreferences.kt` defaults `mpv_profile` to `fast`.
-- `MPVView.kt` applies that profile before Chrovelo's individual overrides.
-- exact pinned mpv `etc/builtin.conf` defines `[fast]` with `hdr-compute-peak=no` and `allow-delayed-peak-detect=yes` in addition to low-quality scaler/dither choices.
-
-Chrovelo later overrides the scaler/dither subset, but it does **not** undo those HDR peak-analysis options.
-
-**Why it robs fidelity:** a generic performance profile silently changes tone/HDR analysis in a branch whose stated purpose is image fidelity.
-
-**Required action:** stop using `fast` as the specialized branch default. Build an explicit Chrovelo profile from audited options only, then verify every effective option at runtime.
-
-### F003 — Debanding is hard-enabled even when the preference is `None` — **P0 / CONFIRMED**
-
-**Evidence:**
-
-- `DecoderPreferences.debanding` defaults to `Debanding.None`.
-- both managed `mpv.conf` and `MPVView.initOptions()` set `deband=yes` plus fixed parameters.
-- `MPVView.postInitOptions()` handles `Debanding.None` with an empty branch, so it does not turn the already-enabled GPU debander off.
-- the settings UI can later issue `deband=no`, but fresh playback starts processed.
-
-**Why it robs fidelity:** clean gradients/textures are modified despite the user/reference state saying no debanding.
-
-**Required action:** one authoritative deband owner. `None` must mean bit-exactly no deband stage. Quality presets may opt into it explicitly or automatically only behind measurable artifact detection.
-
-### F004 — Android output colorspace is not explicitly contracted — **P0 / CONFIRMED + MEASURE**
-
-**Evidence:**
-
-- `AndroidManifest.xml` does not request an explicit wide-gamut/HDR color mode for `PlayerActivity`.
-- pinned mpv `video/out/vulkan/context_android.c` creates a generic `VkAndroidSurfaceKHR` with zeroed `ra_ctx_params` and reports `VO_NOTIMPL` for Android control.
-- pinned `video/out/android_common.c` only wraps the Java `Surface` as an `ANativeWindow`; it does not set Android dataspace/primaries/HDR metadata.
-- Chrovelo does not currently provide an app-side dataspace/output-colorspace contract.
-
-**Why it robs fidelity:** the final compositor/output path is not guaranteed to represent the primaries/TRC the renderer thinks it is targeting. Wide-gamut capability can be left unused or silently color-managed through an unintended space.
-
-**Required action:** establish and instrument the Android output contract first; do not assume `rgba16f` implies a wide-gamut output surface.
-
-### F005 — No explicit content-frame-rate matching path — **P0 temporal / CONFIRMED**
-
-**Evidence:**
-
-- no `Surface.setFrameRate` / equivalent content-frame-rate request is present in the player lifecycle inspected here;
-- no preferred display-mode selection is present;
-- no Chrovelo `video-sync`/cadence policy is defined in the managed config;
-- pinned `androidvk` initializes the Vulkan swapchain with `VK_PRESENT_MODE_FIFO_KHR` and its Android control path is `VO_NOTIMPL`.
-
-**Why it robs fidelity:** perfect pixels displayed at the wrong cadence are not faithful playback. 23.976/24/25/30/50/60 fps material can be presented with avoidable cadence judder or duplicate/drop patterns if Android chooses an incompatible display rate.
-
-**Required action:** add an Android-16-aware frame-rate policy and telemetry. Verify actual content FPS, display refresh, requested frame rate, measured vsync cadence, and zero avoidable frame drops.
-
-### F006 — Resident shader assumes Rec.709 as the universal SDR working/source gamut — **P0 / CONFIRMED**
-
-**Evidence:** `pixel9-perceptual-expansion-resident-v3.1.glsl`
-
-- hard-coded Rec.709 luma coefficients `vec3(0.2126, 0.7152, 0.0722)`;
-- hard-coded linear-sRGB/Rec.709 <-> Oklab matrices;
-- no branch on `video-params/primaries` or source matrix/primaries.
-
-**Why it robs fidelity:** SDR is not synonymous with Rec.709. Wide-gamut SDR and non-709 inputs will be interpreted with the wrong primaries/luma model before the perceptual transform.
-
-**Required action:** make the shader working space explicit. Convert source -> chosen linear working space using metadata before perceptual math, then working space -> target. Do not bake source=709 into the transform.
-
-### F007 — Shader destroys signed linear-light reconstruction values — **P0 / CONFIRMED**
-
-**Evidence:** resident shader begins the processing path with `vec3 rgb = max(src.rgb, vec3(0.0));`.
-
-**Why it robs fidelity:** high-quality reconstruction kernels can legitimately produce small negative linear-light lobes/undershoot. Hard-zeroing them before luminance/Oklab math changes edge energy, hue relationships and ringing behavior rather than handling the signed intermediate deliberately.
-
-**Required action:** retain signed working values through the stages that can support them. Apply a deliberate gamut/output constraint at the correct final boundary instead of an unconditional pre-transform floor.
-
-### F008 — Shader hard-clamps SDR working luminance to `[0,1]` — **P0 / CONFIRMED**
-
-**Evidence:** `expand_luminance()` begins with `y = clamp(y, 0.0, 1.0)` and returns another `[0,1]` clamp.
-
-**Why it robs fidelity:** extended-range/superwhite SDR or reconstruction overshoot above nominal white is collapsed before the output/display mapping has a chance to decide what to do with it. This also makes the shader incapable of representing legitimate scene/output headroom in its own domain.
-
-**Required action:** define nominal white separately from mathematical headroom. Preserve extended values through the working transform and compress/clip only at a measured target boundary.
-
-## P1 — direct quality/capability risks
-
-### F009 — Always-on deband grain injects noise — **P1 / CONFIRMED**
-
-`deband-grain=8` is hard-coded in both `MPVView.kt` and managed `mpv.conf`. Even when grain masks banding, it is added information and must not be an unconditional reference default.
-
-### F010 — Sigmoid upscaling is an always-on nonlinear image transform — **P1 / CONFIRMED**
-
-`sigmoid-upscaling=yes` is hard-coded. It can reduce ringing but deliberately changes interpolation behavior/local contrast. Keep it as an evaluated quality mode, not an unquestioned definition of fidelity.
-
-### F011 — Final swapchain precision is unknown; `rgba16f` proves only the intermediate FBO — **P1 / MEASURE**
-
-Pinned Vulkan context creates the libplacebo swapchain without an explicit surface format in the Android wrapper. The actual Pixel swapchain format/bit depth is not exposed in Chrovelo telemetry.
-
-**Required action:** log the chosen Vulkan surface format, color space, bits/channel, Android dataspace and compositor mode on device.
-
-### F012 — `target-peak=auto` is unverified against the actual Pixel luminance state — **P1 / MEASURE**
-
-Auto can be appropriate, but maximum fidelity requires proving what value is actually selected in Natural/Adaptive display modes, SDR/HDR, different system brightness levels and thermal states.
-
-### F013 — `target-colorspace-hint=no` sits on top of an Android backend with no explicit color signaling — **P1 / MEASURE**
-
-This setting is part of the empirically working expanded-brightness path and must **not** be casually changed. However, the combined pipeline currently has no proven output-dataspace contract. Preserve it until controlled A/B tests show how Android 16 responds.
-
-### F014 — `mediacodec` direct fallback can silently change the validated render path — **P1 / CONFIRMED**
-
-Kotlin config uses `hwdec=mediacodec-copy,mediacodec,no`, while the known-good contract was established primarily with `mediacodec-copy`.
-
-**Required action:** if copy fails, surface the fallback in telemetry and validate the same shader/color/output path before accepting direct MediaCodec as fidelity-equivalent.
-
-### F015 — `hwdec-codecs=all` has no per-format fidelity qualification — **P1 / CONFIRMED**
-
-Hardware decode is allowed broadly without a Chrovelo capability matrix for codec/profile/bit depth/chroma/metadata preservation.
-
-**Required action:** verify codec-by-codec output format and metadata; allow software fallback where the hardware path loses information or produces known driver errors.
-
-### F016 — Renderer/config options have two owners with already-visible drift — **P1 / CONFIRMED**
-
-The same critical options are written in managed `mpv.conf` and again in `MPVView.kt`. They are already not identical (`hwdec` is one example). Split ownership makes the effective pipeline depend on precedence and future edits can silently diverge.
-
-**Required action:** one authoritative generated profile/source of truth, plus effective-option dump at playback start.
-
-### F017 — Conventional mpv image controls can stack with Shader Lab — **P1 / CONFIRMED**
-
-The Video Filters panel and Filter Presets write `brightness`, `contrast`, `gamma`, `saturation`, `hue`, and `sharpen` directly while the Shader Lab processing model expects ordinary mpv image controls to be neutral unless deliberately used.
-
-**Required action:** define processing ownership. Reference/max-fidelity mode must expose every active transform and offer an atomic neutral/bypass state.
-
-### F018 — Persisted filter UI state can disagree with the renderer after restart — **P1 / CONFIRMED**
-
-Filter values are stored in `DecoderPreferences`, but `MPVView.initOptions()` forcibly initializes the corresponding mpv picture controls to zero. The UI can therefore display a remembered processed value while the current renderer starts neutral, until controls are touched again.
-
-**Required action:** either restore them intentionally and visibly or reset the preference state. Never have UI state claim a transform that is not active.
-
-### F019 — Window brightness can override display calibration state — **P1 / CONFIRMED**
-
-`PlayerViewModel.changeBrightnessTo()` writes `WindowManager.LayoutParams.screenBrightness`; remembered brightness may be reapplied by `PlayerActivity`.
-
-**Why it matters:** the Pixel's panel luminance, HDR headroom, tone-mapping behavior and perceived black/white relationship are display-state dependent. A gesture can therefore change the viewing/calibration condition independently of renderer settings.
-
-**Required action:** record window/system brightness in fidelity telemetry; reference tests need a locked, documented display state.
-
-### F020 — Gamut limiter confines expansion to the Rec.709 RGB cube — **P1 / CONFIRMED**
-
-`find_gamut_chroma_scale()` converts Oklab back through the hard-coded Rec.709 matrices and defines in-gamut as each Rec.709 RGB component within `RGB_LOW..RGB_HIGH`.
-
-**Why it robs capability:** this prevents the perceptual expansion stage from deliberately using Pixel wide-gamut color volume beyond Rec.709 primaries, even though that is a stated future goal.
-
-**Required action:** make gamut limiting target-aware. Boundary search should use the actual target gamut/display mapping, not a fixed source-gamut cube.
-
-### F021 — Boundary safety constants shave available gamut/white — **P1/P2 / CONFIRMED**
-
-`RGB_HIGH=0.99995`, `RGB_LOW=0.00005`, and `GAMUT_MARGIN=0.997` deliberately retreat from exact boundaries. This is small but systematic and should be justified by numerical/driver evidence rather than folklore.
-
-### F022 — Luminance model is not source-primaries aware — **P1 / CONFIRMED**
-
-The same Rec.709 luminance vector drives expansion for every SDR input. This is distinct from the Oklab matrix issue: even if a different source gamut survives decoding, target Y is still wrong for non-709 primaries.
-
-### F023 — SDR/HDR classification is transfer-function-only — **P1/P2 / CONFIRMED**
-
-Managed config activates the SDR profile for any non-empty gamma other than `pq`/`hlg`; bridge classification similarly treats non-PQ/HLG values as SDR.
-
-**Required action:** classification should preserve UNKNOWN/unsupported transfer states and include enough source metadata to avoid applying expansion on an inadequately characterized input.
-
-### F024 — Pixel Natural vs Adaptive display state is not part of the render contract — **P1 / MEASURE**
-
-The project already established that Pixel Adaptive is not a simple saturation multiplier. Chrovelo currently has no runtime/test contract recording which display mode is active. A future Adaptive-style shader can therefore double-process an already enhanced display mode unless tests explicitly control this external state.
-
-### F025 — Android HDR/wide-color headroom is not explicitly requested or measured — **P1 / MEASURE**
-
-The app currently relies on the empirically observed `vo=gpu` path to trigger expanded brightness. There is no explicit Android-side headroom/dataspace telemetry proving when the compositor/panel grants HDR or extended luminance headroom.
-
-**Required action:** instrument first; only then evaluate Android 15/16 HDR-headroom APIs or color modes without risking the known brightness behavior.
-
-## P2 — quality risks, observability gaps, and conditional paths
-
-### F026 — `rgba16f` may be a precision ceiling relative to the hardware — **P2 / MEASURE**
-
-Half-float is excellent for mobile rendering, but it is not mathematically lossless. Chrovelo's goal is hardware-limit fidelity, so `rgba16f` vs a feasible higher-precision path must be measured with stress gradients, repeated color transforms and error statistics rather than assumed sufficient.
-
-### F027 — Sharp EWA scaling plus no explicit antiring policy is unbenchmarked — **P2 / MEASURE**
-
-`ewa_lanczossharp` is intentionally sharp and can overshoot; the shader currently floors negative values. That combination must be evaluated together. A scaler cannot be ranked in isolation from the downstream clipping behavior.
-
-### F028 — Dither algorithm/depth is not tied to measured final output depth — **P2 / MEASURE**
-
-`dither=fruit` and `dither-depth=auto` are forced. Dither is valuable when reducing precision, but gratuitous noise is not. Verify the actual swapchain depth and whether the renderer's auto depth matches it.
-
-### F029 — Linear/sigmoid scaling choices cannot be atomically bypassed for reference comparison — **P2 / CONFIRMED**
-
-The Shader Lab original/tuned comparison is shader-oriented; it does not currently define a whole-pipeline reference state that also neutralizes optional deband/sigmoid/filter processing.
-
-### F030 — `vd-lavc-film-grain=cpu` is unconditional — **P2 / MEASURE**
-
-Correct film-grain synthesis can improve fidelity for codecs that carry grain metadata, but forcing a CPU policy globally may affect decode load/cadence and is not proven optimal for every supported codec/hwdec path.
-
-### F031 — CPU debanding adds a separate `gradfun` filter path — **P2 / CONFIRMED**
-
-When selected, Chrovelo adds `@deband:gradfun=radius=12`. Any libavfilter/CPU-filter path must be audited for intermediate pixel format/bit-depth negotiation so a quality feature does not force a lower-precision conversion.
-
-### F032 — Creative filter presets have no explicit reference-mode lockout — **P2 / CONFIRMED**
-
-Presets intentionally alter pixels. The missing piece is a global processing graph/status that makes it impossible to mistake a creative preset for the maximum-fidelity baseline.
-
-### F033 — Geometric transforms are not included in a whole-pipeline reference state — **P2 / CONFIRMED**
-
-Crop (`panscan=1`), Stretch (`video-aspect-override`), custom aspect and `video-zoom` are explicit features, but fidelity validation needs a one-touch canonical geometry state: source aspect, zero panscan, zero zoom/pan, no hidden persistence.
-
-### F034 — Source color/decode metadata is under-observed — **P2 / CONFIRMED**
-
-Current Lab HUD shows gamma and a few renderer properties, but a fidelity proof needs at minimum source pixel format, hardware pixel format, bit depth, chroma subsampling/location, color matrix, levels/range, primaries, transfer, mastering metadata, signal peak and rotation/aspect.
-
-### F035 — Final output metadata is under-observed — **P2 / CONFIRMED**
-
-Chrovelo does not currently surface the actual Vulkan swapchain format, Android dataspace/color mode, compositor color mode, output primaries/TRC, bits/channel or HDR headroom state.
-
-### F036 — Temporal fidelity is under-observed — **P2 / CONFIRMED**
-
-Frame-drop counters alone are insufficient. Add content FPS, display refresh, requested frame rate, estimated display FPS, video-sync mode, mistimed/delayed frames and presentation cadence.
-
-### F037 — No automated pixel-difference acceptance harness exists for the complete device pipeline — **P2 / CONFIRMED**
-
-Unit tests validate metadata/commands, not output pixels. Maximum fidelity requires synthetic source patterns plus controlled captures/readbacks and numerical error metrics for identity mode, scaling, chroma, gamut, SDR expansion and HDR bypass.
-
-### F038 — R08 live-PARAM patch adds per-executing-hook option-cache polling — **P2 temporal / CONFIRMED**
-
-`tools/patch_r08_live_uniform_poll.py` injects `m_config_cache_update(p->shader_opts_cache)` from the executing `user_hook()` path. It is intended to eliminate stale uniforms, but it adds frame-path work and the device still shows no visible PARAM response.
-
-**Required action:** when R08 resumes, profile this path and prefer event-driven invalidation/current uniform state over permanent per-hook polling if possible.
-
-### F039 — Runtime native binary is a large vendored AAR; source/binary parity must remain a hard gate — **P2 / CONFIRMED**
-
-`app/libs/mpv-android-lib-v0.0.1.aar` is what the app actually executes. R08 workflows contain strong lineage/fingerprint checks, including exact R07 FFmpeg restoration and Shaderc gates, but any future manual AAR replacement could bypass source review.
-
-**Required action:** CI must reject an AAR whose native fingerprints cannot be reproduced from the audited recipe.
-
-## P3 — peripheral, lifecycle, or future-hardening findings
-
-### F040 — Screenshot output is not defined as a fidelity-proof stage — **P3 / CONFIRMED**
-
-Snapshots use mpv `screenshot-to-file` with `video` or `subtitles`, but the project does not define whether that capture is pre-VO, post-filter, post-shader, post-tone-map, or display-equivalent for validation purposes.
-
-### F041 — Screenshot completion uses a fixed 200 ms delay — **P3 / CONFIRMED**
-
-`PlayerViewModel` waits 200 ms then tests the temporary file. This is a race/reliability issue for proof captures. Use completion/event semantics.
-
-### F042 — Surface teardown/recreation has an acknowledged native race — **P3 / CONFIRMED IN PINNED WRAPPER**
-
-Pinned `BaseMPVView.surfaceDestroyed()` sets `vo=null`, then detaches the surface; its own comment notes a potential race because setting the property may not wait for VO deinit. Renderer recreation can also invalidate state/telemetry.
-
-### F043 — Generic GPU preferences do not describe the specialized branch's actual renderer — **P3 / CONFIRMED**
-
-`DecoderPreferences` retains `gpuNext`/`useVulkan` preferences while `MPVView` deliberately hard-forces `vo=gpu` + `androidvk`. The hard force is correct for this branch, but stale UI/preferences create configuration ambiguity.
-
-### F044 — Missing post-cutoff stride/BPP correctness fix is a TAKE candidate — **P3 now; elevate if path proves applicable**
-
-Upstream mpv `8d04be2b856c9330178ddd6ab20848c58fada3af` (2026-05-01), `mp_image: force stride to be multiple of bpp`, fixes Vulkan texel-size alignment correctness. This is low visual-intent risk and should be evaluated for a narrow backport after R08 parity is stable.
-
-### F045 — Additional post-cutoff renderer correctness fixes must be mined, not wholesale-upgraded — **P3 tracking**
-
-Verified candidates include:
-
-- `c1a21bb8d9db238054b7029c29d9e319889aad04` — skip invalid shader component overwrite; good Shader Lab robustness candidate.
-- `702abfd587b3911d6dbda05a987b015ea9896bae` — use actual rather than logical hwdec texture dimensions; fixes polar-scaler glitches on affected Vulkan hwdec planes. Applicability to the current MediaCodec-copy path must be proven before backporting.
-
-The policy remains narrow backports against the exact R07 renderer, not an unbounded renderer modernization.
+This flaw exists in R07 and remains unfixed in current upstream mpv’s Android Vulkan context. Merely upgrading mpv or switching to `gpu-next` will not solve it.
 
 ---
 
-# Findings that are intentional and must not be “fixed” blindly
+### 3. Output is deliberately quantized as though it were 8-bit
 
-The audit does **not** declare the following wrong merely because they alter the source:
+Because Android reports no framebuffer depth, legacy `vo_gpu` receives `-1`.
 
-- `vo=gpu` — mandatory because this is the Pixel path that actually produced expanded panel brightness.
-- Vulkan / `androidvk` — current proven renderer API/context.
-- `mediacodec-copy` as the primary hardware decode path — current Pixel validation baseline.
-- `SDR-intensity=4.16` — intentional expanded-SDR luminance path; it must be scoped and measured, not casually removed.
-- perceptual luminance/chroma expansion itself — this is the product goal, with original/bypass comparison as the reference.
-- `inverse-tone-mapping=no` — part of the known-good avoidance of the problematic inverse-tone-map path.
-- `gamut-mapping-mode=perceptual` — may be correct, but its ownership relative to the custom gamut limiter must be tested for double compression.
-- high-quality EWA scalers — they are candidates for the final path; the audit asks for objective comparison and correct downstream handling, not automatic removal.
-- `target-colorspace-hint=no` — preserve until Android-output A/B tests prove a safer replacement because it is intertwined with the known Pixel brightness behavior.
+With:
 
----
+```text
+dither-depth=auto
+```
 
-# Seven fidelity acceptance gates
+mpv explicitly assumes an 8-bit target whenever depth is unknown.
 
-No configuration should be called “maximum fidelity” until all seven gates are measurable and pass on the Pixel 9 Pro XL.
+Therefore, even if the Pixel’s Vulkan driver selects a 10-bit swapchain, mpv performs its final quantization and dithering for 8-bit output first.
 
-## Gate 1 — Decode/source integrity
-
-Must prove:
-
-- no accidental 8-bit/4:2:0 coercion;
-- decoded pixel format/bit depth/chroma match the best available source path;
-- source matrix, range, primaries, transfer and HDR metadata survive decode;
-- hardware/software decoder changes are visible and fidelity-qualified;
-- film-grain policy is codec-aware and does not create cadence failures.
-
-## Gate 2 — Working precision integrity
-
-Must prove:
-
-- every intermediate format is known;
-- `rgba16f` error is quantified against a higher-precision reference where feasible;
-- no premature clamp/floor destroys signed or extended-range intermediate values;
-- no filter silently inserts a lower-precision CPU conversion.
-
-## Gate 3 — Spatial/chroma reconstruction integrity
-
-Must prove with synthetic edges/chroma zones:
-
-- luma scale, chroma scale and downscale kernels are measured separately;
-- chroma location is preserved;
-- ringing/aliasing/blur are quantified;
-- sigmoid/antiring policy is chosen from evidence;
-- rotation/aspect/zoom reference mode is geometrically neutral.
-
-## Gate 4 — Color/dynamic-range integrity
-
-Must prove:
-
-- working gamut is explicit and source-aware;
-- Oklab conversion uses the correct source/working primaries;
-- nominal white is separate from mathematical headroom;
-- gamut limiting uses the actual target gamut and does not double-compress with mpv;
-- SDR expansion and true PQ/HLG HDR are mutually correct;
-- target peak/reference white are observed rather than assumed.
-
-## Gate 5 — Android/display-output integrity
-
-Must record and validate:
-
-- Vulkan swapchain format and bits/channel;
-- Android dataspace/color mode;
-- output primaries/TRC;
-- Natural vs Adaptive test state;
-- system and window brightness;
-- granted HDR/extended luminance headroom;
-- compositor does not add an unintended gamut/tone transform.
-
-## Gate 6 — Temporal/presentation integrity
-
-Must prove:
-
-- content FPS and display refresh are compatible;
-- frame-rate requests actually take effect;
-- no avoidable judder pattern;
-- zero unexplained frame drops/mistimed/delayed frames;
-- Shader Lab live tuning/diagnostics do not disturb cadence.
-
-## Gate 7 — Reference/regression proof
-
-Must provide:
-
-- atomic whole-pipeline reference mode;
-- synthetic identity/gradient/chroma/gamut/HDR test clips;
-- numerical pixel/error metrics where capture stage permits;
-- stable screenshots/readbacks with a documented stage;
-- effective mpv option dump and native fingerprint per proof build;
-- A/B device proof for every fidelity-affecting change;
-- no advancement based only on property readback when rendered pixels disagree.
+This is code-proven. The actual Pixel swapchain format still needs a device log, but any physical 10-bit surface would currently be underused.
 
 ---
 
-# Recommended remediation order
+### 4. The default decoder cannot guarantee 10-bit preservation
 
-This is intentionally ordered to avoid tuning a shader on top of a compromised pipeline.
+The default order is:
 
-1. **Remove destructive/silent baseline damage:** F001, F002, F003 and split option ownership F016.
-2. **Instrument the final Android output:** F004, F011-F013, F025, F034-F036.
-3. **Establish temporal truth:** F005 plus Gate 6.
-4. **Repair shader domain assumptions:** F006-F008, F020-F023 before further “look” tuning.
-5. **Evaluate optional processing scientifically:** deband/grain, sigmoid, dither, antiring, film grain, CPU filters.
-6. **Backport narrow upstream correctness fixes:** start with `8d04be2b` and `c1a21bb8`; validate each against exact R07 parity.
-7. **Resume R08 live-PARAM repair only after the reference pipeline is observable enough to tell whether a slider change is real, correctly transformed, and temporally safe.**
+```text
+mediacodec-copy,mediacodec,no
+```
+
+In the pinned FFmpeg MediaCodec implementation, copy-mode output maps only to:
+
+* `AV_PIX_FMT_YUV420P`
+* `AV_PIX_FMT_NV12`
+
+There is no P010 or other 10-bit MediaCodec buffer mapping.
+
+A 10-bit source can therefore:
+
+* Be converted to 8-bit by the decoder
+* Produce an unsupported output-format failure
+* Fall back to another decoder
+
+It cannot be assumed to remain 10-bit through `mediacodec-copy`.
+
+Direct `mediacodec` output uses Android `AImageReader`, but the pinned mpv mapper explicitly requires OpenGL and exposes the result as `RGB0`. It cannot map into the app’s forced Vulkan renderer.
+
+Until proper Vulkan `AHardwareBuffer`/YCbCr/P010 interop exists, fidelity-first behavior should select software decoding for 10-bit and HDR content.
 
 ---
 
-# Audit policy going forward
+### 5. Current R08 actions can apply the entire shader twice
 
-- Upstream is evidence, not authority; a stable upstream default can still be a fidelity compromise.
-- “Known good” means it reproduced a prior desired result, not that it is mathematically optimal.
-- Performance optimizations are allowed only when they are pixel/cadence equivalent or the fidelity tradeoff is explicit.
-- Every hidden fallback must be observable.
-- Every processing stage must have one owner.
-- Every automatic mode must expose the value/path it chose.
-- Every visual optimization must be tested against objective patterns as well as real content.
-- The Pixel device result outranks a property-level PASS: if the image does not change, the parameter transport is not accepted.
+The [Lua controller](sandbox:/workspace/scratch/6857edfc174a/mpvFlux-OSD/app/src/main/assets/mpvlab/source/scripts/pixel9-shader-lab.lua) still generates and appends runtime shader A/B files for:
 
-This audit is a living source-controlled document. Findings are removed only after a code change plus the relevant gate proves the robber is gone or that the suspected ceiling is measurably harmless on the target device.
+* Built-in preset load
+* User preset load
+* Morph
+* Reset all
+* Revert to video start
+* Load state
+* Shader proof
+
+Android then reads the changed Lua values and publishes them into the resident R08 shader.
+
+However, [ShaderLabResidentGpuTransport.kt](sandbox:/workspace/scratch/6857edfc174a/mpvFlux-OSD/app/src/main/java/app/marlboroadvance/mpvex/repository/shaderlab/bridge/ShaderLabResidentGpuTransport.kt) skips its full reconciliation when:
+
+* Source is already SDR
+* Resident shader is already attached
+
+That means it updates resident parameters without removing the Lua runtime shader.
+
+Result:
+
+```text
+Resident V3.1 shader
+        +
+Generated runtime V3.1 shader
+        =
+V3.1 transformation applied twice
+```
+
+This can significantly exaggerate contrast, luminance expansion, saturation, clipping, and skin treatment after preset-related actions.
+
+The existing unit test misses the defect because its fake transport records the `script-message` but does not actually execute Lua’s `change-list` commands.
+
+## Major shader fidelity losses
+
+### 6. V3.1 changes strength depending on scaling
+
+The resident shader uses:
+
+```glsl
+//!HOOK LINEAR
+```
+
+Exact legacy `vo_gpu` only creates that hook stage when:
+
+* Upscaling with sigmoid or linear upscaling
+* Downscaling with linear downscaling
+* Not HDR downscaling
+
+At exact 1:1 sizing, the `LINEAR` hook is skipped.
+
+Therefore, the same source can change appearance when:
+
+* Surface resolution changes
+* The phone rotates
+* Zoom changes
+* Aspect mode changes
+* Content resolution changes
+* Picture-in-picture or window size changes
+
+A core perceptual transform must not disappear simply because the source happens to match the viewport.
+
+---
+
+### 7. V3.1 processes every SDR gamut as though it were BT.709
+
+The [resident shader](sandbox:/workspace/scratch/6857edfc174a/mpvFlux-OSD/app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl) hardcodes:
+
+```glsl
+vec3(0.2126, 0.7152, 0.0722)
+```
+
+and fixed linear-sRGB/BT.709 Oklab matrices.
+
+But the shader runs before mpv performs output-primary conversion, and eligibility only checks whether gamma is PQ or HLG.
+
+It therefore treats all of these as BT.709:
+
+* BT.601 SDR
+* BT.2020 SDR
+* Display-P3
+* Adobe RGB-like sources
+* Untagged or incorrectly tagged SDR
+
+That produces incorrect luminance, hue, skin detection, chroma scaling, and gamut decisions before mpv later converts the result.
+
+---
+
+### 8. The shader destroys valid extended-range information
+
+The shader performs:
+
+```glsl
+vec3 rgb = max(src.rgb, vec3(0.0));
+```
+
+It also:
+
+* Clamps luminance into `0…1`
+* Caps the highest RGB component at `0.99995`
+* Uses `RGB_LOW=0.00005`
+* Pulls gamut-limited colors inward with `GAMUT_MARGIN=0.997`
+
+Consequences:
+
+* Negative RGB generated during valid color conversion is discarded
+* Superwhite/headroom is discarded
+* Saturated boundary colors are deliberately reduced
+* Repeated nonlinear processing cannot recover the removed information
+
+Sigmoid upscaling adds another `0…1` clamp before scaling.
+
+`rgba16f` cannot rescue values already clipped by shader logic.
+
+---
+
+### 9. The default “Reference” is an active grade
+
+The V3.1 defaults include nonzero:
+
+* Luminance contrast expansion
+* Highlight lift
+* Base chroma expansion
+* Midtone chroma expansion
+* Bright-region chroma expansion
+* Skin-dependent chroma behavior
+
+That may be a desirable Pixel-Adaptive-style presentation, but it is not source-neutral.
+
+For strict terminology:
+
+* “V3.1 Reference” means the reference enhancement grade
+* It does not mean reference/source-faithful reproduction
+
+A separate neutral mode is required for objective comparison.
+
+## Default processing problems
+
+### 10. GPU debanding is enabled even when the preference says None
+
+Startup always sets:
+
+```text
+deband=yes
+deband-iterations=2
+deband-threshold=24
+deband-range=16
+deband-grain=8
+```
+
+Yet `DecoderPreferences` defaults to:
+
+```text
+Debanding.None
+iterations=1
+threshold=48
+range=16
+grain=32
+```
+
+`postInitOptions()` does nothing for `None`, so it never disables the already-enabled GPU debander.
+
+CPU mode adds `gradfun` without disabling GPU debanding, producing two debanding passes.
+
+Effects include:
+
+* Removal of legitimate texture
+* Removal or alteration of film grain
+* Smearing of subtle gradients
+* Synthetic grain replacing actual grain
+
+This is an active default-path fidelity robber.
+
+---
+
+### 11. Default `fast` profile leaves HDR peak analysis disabled
+
+The app defaults to:
+
+```text
+profile=fast
+```
+
+It later overrides the fast scaler and dither selections, but it does not override:
+
+```text
+hdr-compute-peak=no
+```
+
+Therefore HDR→SDR tone mapping does not dynamically analyze scene/frame peaks. It relies on static signal metadata or inferred peaks, which can cause inferior highlight allocation across changing scenes.
+
+---
+
+### 12. Sharp EWA scaling lacks the high-quality profile’s antiring protection
+
+The app forces:
+
+```text
+scale=ewa_lanczossharp
+cscale=ewa_lanczos
+dscale=ewa_lanczos
+```
+
+But because the default profile is `fast`, `scale-antiring` remains zero.
+
+mpv’s built-in `high-quality` profile would use:
+
+```text
+scale-antiring=0.6
+```
+
+The current default is therefore more vulnerable to:
+
+* Edge halos
+* Overshoot
+* Ringing around high-contrast detail
+* Artificially sharpened texture
+
+Sigmoid upscaling reduces some ringing but does so partly through clamping.
+
+## Placebo and misleading controls
+
+### 13. `sdr-intensity` is not implemented in the inspected engine
+
+The exact pinned mpv source contains no `sdr-intensity` option.
+
+Neither the committed binary nor the R07 Vulkan binary contains that option name.
+
+The Lua controller attempts to set it, notices failure, and then marks it unsupported. The Android UI can still retain and display a value.
+
+This conflicts with our earlier visual impression that changing it affected panel brightness. Static engine evidence says the property itself is not implemented, so that observation needs a controlled instrumented A/B test before we preserve the claim. Another simultaneous state change likely caused the visible difference.
+
+---
+
+### 14. `target-colorspace-hint` cannot affect the active renderer
+
+That option belongs to `vo=gpu-next`.
+
+The app forces legacy `vo=gpu`, and exact mpv documentation lists only Wayland, D3D11, and winvk as supported colorspace-hinting contexts.
+
+The configured value is therefore inactive on Android.
+
+---
+
+### 15. `gamut-mapping-mode=perceptual` does not run
+
+Legacy `vo_gpu` accepts only:
+
+* `auto`
+* `warn`
+* `clip`
+* `desaturate`
+
+Although the global parser recognizes `perceptual`, the renderer rejects it, logs a warning, and changes it to `auto`.
+
+The requested perceptual mapping never executes.
+
+---
+
+### 16. “HDR to SDR compression” cannot process HDR
+
+`SDR_COMPRESS` is inside the SDR-only custom shader.
+
+The resident shader is removed for PQ and HLG, so the control can never compress HDR.
+
+Its actual math is:
+
+```glsl
+mix(tunedSDR, originalSDR, SDR_COMPRESS)
+```
+
+It simply reduces the strength of the SDR grade.
+
+---
+
+### 17. The GPU renderer preferences are ignored
+
+`DecoderPreferences` exposes:
+
+* `gpuNext`
+* `useVulkan`
+
+But the specialized player path always forces:
+
+```text
+vo=gpu
+gpu-context=androidvk
+gpu-api=vulkan
+```
+
+The preferences do not change runtime behavior and prevent easy testing of improved renderers.
+
+## “Original” is not original
+
+The native comparison path changes only the private `R08_BYPASS` shader parameter.
+
+The following remain active:
+
+* GPU debanding
+* EWA scaling
+* Sigmoid upscaling
+* Linear downscaling
+* Dithering
+* mpv color conversion
+* HDR tone mapping
+* Gamut mapping
+* Picture properties
+* Decoder conversions
+
+The UI’s “ORIGINAL” view is therefore only “custom V3.1 shader bypass.”
+
+It should either be relabeled or expanded into a genuine neutral/reference mode.
+
+## Additional shader defects
+
+### 18. Negative chroma controls do not reduce chroma
+
+The UI permits negative values for several chroma controls.
+
+But:
+
+```glsl
+if (requestedScale <= 1.000001)
+    return 1.0;
+```
+
+Any requested chroma reduction is changed back to unity.
+
+The controls can cancel positive expansion, but they cannot desaturate below the input.
+
+---
+
+### 19. Gamut search can produce small saturation steps
+
+The default gamut limiter uses seven binary-search iterations.
+
+That gives approximately 1/128 resolution across the requested chroma-expansion interval. Near gamut boundaries, this can create small stepped saturation changes or contour-like transitions.
+
+Twelve iterations are already permitted and would be safer, although an analytic or libplacebo-based gamut solution would be preferable.
+
+---
+
+### 20. Ordered control pairs can still become equal
+
+Both Kotlin and Lua attempt to keep `smoothstep` edge pairs separated by `0.000001`.
+
+At a shared upper limit, adding the gap is clamped back to the same maximum. Both values remain equal.
+
+GLSL defines `smoothstep(edge, edge, x)` as undefined.
+
+This can create discontinuities or device-dependent results after aggressive tuning or malformed preset/state restoration.
+
+---
+
+### 21. Source detection has a transition race
+
+Classification watches only:
+
+```text
+video-params/gamma
+```
+
+A path change resets comparison state but does not remove the resident shader.
+
+For `NOT_READY` and `UNKNOWN`, resident reconciliation does nothing.
+
+Therefore, when switching from SDR to HDR, the old SDR resident shader can remain attached until the new gamma event arrives. Depending on mpv event order, the first HDR frames may be processed by the SDR shader.
+
+This is timing-dependent and needs a device transition test.
+
+## Optional but real losses
+
+These are not active on a fresh installation unless selected:
+
+* `vf=format=yuv420p`: destroys >8-bit precision and higher chroma formats
+* Crop/panscan: removes image area
+* Stretch/custom aspect: geometrically distorts the image
+* Zoom: forces extra resampling and cropping
+* Sharpen: creates artificial edge contrast
+* Brightness/contrast/gamma/saturation/hue presets: deliberate grading
+* CPU/GPU debanding: removes source information
+* Audio normalization: changes dynamics
+* Mono/stereo forcing: changes channel presentation
+* Reverse stereo: swaps channels
+* Speed changes: require temporal resampling/time stretching
+* Volume above 100: can clip
+
+## Audio fidelity findings
+
+### 22. `Auto` and `Auto Safe` are reversed
+
+[AudioPreferences.kt](sandbox:/workspace/scratch/6857edfc174a/mpvFlux-OSD/app/src/main/java/app/marlboroadvance/mpvex/preferences/AudioPreferences.kt) maps:
+
+```text
+UI Auto      → mpv auto-safe
+UI Auto Safe → mpv auto
+```
+
+The default is UI `Auto Safe`, so the engine actually receives `auto`.
+
+That can change multichannel routing and downmix behavior from what the user selected.
+
+---
+
+### 23. Default audio is not bit-perfect
+
+The pinned engine tries Android AudioTrack first.
+
+AudioTrack:
+
+* Runs through Android’s shared audio path
+* Uses the native output rate as a ceiling
+* Resamples higher-rate audio
+* Does not request exclusive output
+* Can undergo further Android mixer processing
+
+Ordinary 44.1/48 kHz material may be fine, but high-resolution or external-DAC playback is not bit-perfect.
+
+## Temporal fidelity
+
+### 24. No display frame-rate matching exists
+
+The app and Android Vulkan context do not use:
+
+* `Surface.setFrameRate`
+* Preferred display mode
+* Android refresh-rate selection
+* A functional display-vsync callback
+* Explicit display-resample configuration
+
+Vulkan FIFO avoids tearing, but it does not guarantee correct cadence.
+
+On the Pixel’s 60/120 Hz modes, 23.976, 24, 25, and 50 fps content can still exhibit repeated-frame cadence or timing drift depending on Android’s selected refresh mode.
+
+## Non-playback imagery
+
+Browser thumbnails are:
+
+* Capped to 1024 pixels
+* Stored as JPEG
+* Written at quality 100
+
+JPEG quality 100 remains lossy. This affects only browser/playlist thumbnails—not video playback.
+
+Snapshots use PNG and do not add JPEG compression.
+
+## Relevant beyond-R07 upstream improvement
+
+R07’s mpv pin predates commit:
+
+```text
+702abfd58 — vo_gpu: use actual (not logical) texture dimension
+```
+
+It fixes polar-scaler glitches when hardware-decoded textures have padded dimensions such as 1088 pixels for a logical 1080-line frame.
+
+This becomes especially relevant once Chrovelo has a real Vulkan zero-copy hardware decode path.
+
+Current upstream mpv still lacks the Android HDR/colorspace/depth solution, so an upstream version bump alone is insufficient.
+
+# Recommended improvement order
+
+1. **Repair the native artifact contract.** Every APK must use one canonical Vulkan-capable AAR. CI should fail if `androidvk`, `libvulkan`, libplacebo Vulkan, Shaderc, or required symbols are absent.
+
+2. **Implement real Pixel HDR/wide-gamut output.** Propagate swapchain colorspace and depth, choose and tag 10-bit surfaces, configure Android wide-color behavior, and send proper HDR metadata/dataspace.
+
+3. **Make decoding bit-depth aware.** Use software decode for 10-bit/HDR until Vulkan AHardwareBuffer/P010/YCbCr interop is implemented.
+
+4. **Remove the R08 double-shader path.** Presets, reset, morph, and state restoration must update resident uniforms only. Lua must never append runtime V3.1 shaders under R08.
+
+5. **Make shader execution stage-stable and metadata-aware.** Do not depend on whether scaling occurs. Use the actual source primaries and preserve extended-range values.
+
+6. **Create a genuine reference mode.** Disable enhancement shader, debanding, artificial sharpening, picture grading, and unnecessary transforms while retaining only essential color conversion and scaling.
+
+7. **Make enhancement processing opt-in.** Debanding should honor `None`; saved values should actually be restored; default fidelity mode should be neutral.
+
+8. **Fix HDR tone mapping.** Enable dynamic peak analysis and only tone-map when the actual output cannot accept HDR.
+
+9. **Implement refresh-rate matching.**
+
+10. **Correct audio channel labels and add a high-fidelity audio route.**
