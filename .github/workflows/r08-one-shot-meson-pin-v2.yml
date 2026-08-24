@@ -1,0 +1,36 @@
+name: R08 One-Shot Meson Pin V2
+
+on:
+  push:
+    branches:
+      - agent/upstream-refactor
+    paths:
+      - .github/workflows/r08-one-shot-meson-pin-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  pin:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pin R07-era Meson
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(grep -rlF "'meson>=1.6.1'" .github/workflows/r08-*.yml .github/workflows/refactor-dev.yml || true)
+          (( ${#files[@]} >= 2 ))
+          for f in "${files[@]}"; do
+            sed -i "s/'meson>=1\.6\.1'/'meson==1.10.1'/g" "$f"
+          done
+          git diff --check
+          grep -R -F "'meson==1.10.1'" "${files[@]}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows
+          git commit -m 'R08 pin Meson 1.10.1 for native parity'
+          git push origin HEAD:agent/upstream-refactor

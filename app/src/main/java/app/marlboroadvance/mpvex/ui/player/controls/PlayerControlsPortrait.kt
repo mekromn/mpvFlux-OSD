@@ -34,7 +34,7 @@ fun TopPlayerControlsPortrait(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            RenderPlayerButton(
+            RenderConfigurablePlayerButton(
                 button = PlayerButton.BACK_ARROW,
                 chapters = emptyList(),
                 currentChapter = null,
@@ -51,7 +51,7 @@ fun TopPlayerControlsPortrait(
                 buttonSize = 48.dp,
             )
 
-            RenderPlayerButton(
+            RenderConfigurablePlayerButton(
                 button = PlayerButton.VIDEO_TITLE,
                 chapters = emptyList(),
                 currentChapter = null,
@@ -95,8 +95,8 @@ fun BottomPlayerControlsPortrait(
         horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        buttons.forEach { button ->
-            RenderPlayerButton(
+        buttons.withShaderLabAccessButton().forEach { button ->
+            RenderConfigurablePlayerButton(
                 button = button,
                 chapters = chapters,
                 currentChapter = currentChapter,

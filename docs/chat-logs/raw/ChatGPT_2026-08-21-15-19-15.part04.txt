@@ -1,0 +1,101 @@
+
+Yes. I have the correct handoff now, and I’m not going back to the earlier R07/debugging state.
+
+We are on agent/upstream-refactor, R08 is still IN_PROGRESS, and the roadmap explicitly keeps us on R08 until the resident vo=gpu parameter architecture passes the real Pixel acceptance gates. The runtime-loader repair at 5050fcf7 is also present on the branch and specifically packages the missing libxml2.so.
+
+I re-read the branch README, roadmap, progress record, R08 architecture, and AGENTS.md. The immediate-upstream check is also clean: Muhammedahmed18/mpvFlux is still at f2ed0153, so there is no upstream app-source update we need to integrate first.
+
+More importantly, I continued the renderer-parity investigation and confirmed the problem with hard evidence.
+
+The actual uploaded R07 APK fingerprints as:
+
+mpv:
+v0.41.0-224-gd54bad563
+
+
+FFmpeg:
+N-122998-g5ba2525c7a
+
+
+libplacebo:
+v7.360.0 (v7.360.0-3-gc93aa134)
+
+
+mpv build configuration:
+-Dvulkan=enabled
+
+
+enabled features include:
+vulkan
+
+Its libmpv.so also directly requires:
+
+libvulkan.so
+
+So R07 unquestionably had the Vulkan-capable renderer we are trying to preserve.
+
+And I confirmed the R08 build defect directly in the exact pinned Secozzi harness at fd17fb02...:
+
+Bash
+meson setup $build --cross-file "$prefix_dir"/crossfile.txt \
+    -Dvulkan=disabled -Ddemos=false
+
+That is literally how its libplacebo.sh builds libplacebo.
+
+Even worse for reproducibility, that harness normally shallow-clones current libplacebo HEAD, rather than pinning our R07 renderer revision.
+
+So we now have a precise explanation for why an R08 custom libmpv could pass PARAM tests, Gradle, ELF alignment, signing, and even runtime loading while still looking different from R07.
+
+The R08 repair target is now exact
+
+We need to rebuild the resident-PARAM libmpv with:
+
+mpv        d54bad5636924ab3f39cb6e397b94b6aa8a7c433
+FFmpeg     5ba2525c7affc29cbd99e6266946b382d3fffe8b
+libplacebo c93aa134ab62365ce1177efff99b8e1e66a818e7
+
+
+Vulkan     ENABLED
+vo         gpu
+PARAM      91ceffce -> 0d655fe
+PARAM max  64
+
+I resolved the full libplacebo SHA too: c93aa134ab62365ce1177efff99b8e1e66a818e7.
+
+And we do not add the mined upgrades yet—no c1a21bb8, 8d04be2b, RPN, ENUM, DEFINE, or newer libplacebo Vulkan fixes. First we make R08 effectively “R07 renderer + resident PARAM capability”. Only after the Pixel says the picture is identical do we have a trustworthy baseline for those improvements.
+
+So yes: I’m exactly back where we left off. The miner is finished; renderer parity is the active R08 task.
+--------------------------------------
+ChatGPT:
+
+
+We reached the real native parity gate and it failed specifically during the exact R07 Vulkan renderer rebuild. Everything before that passed: checkout, dependency setup, the resident shader audit, and the 39-PARAM source validation.
+
+The normal Chrovelo arm64/universal jobs succeeded and uploaded artifacts, but there is no R08 parity proof artifact, which confirms the parity job never reached AAR/APK packaging.
+
+I’m not giving you the normal arm64 APK because it is not the renderer-parity build we need to test. The correct next move is to fix the native build failure while keeping these frozen:
+
+mpv        d54bad563 + PARAM backports
+FFmpeg     5ba2525c7a
+libplacebo c93aa134
+vo          gpu
+Vulkan      enabled
+PARAM max   64
+
+Most importantly, I’m not advancing R08 and I’m not substituting a newer renderer just to make it compile. The exact R07 renderer remains the target.
+--------------------------------------
+User:
+
+
+Ok
+--------------------------------------
+ChatGPT:
+
+
+Continuing R08 from the failed native parity build. The next concrete target is the uploaded failure-diagnostics artifact from job 96881103884; once its native-build.log is recovered, the fix will be limited to the first proven native build blocker while preserving the exact R07 renderer revisions and Vulkan path.
+--------------------------------------
+User:
+
+
+OK
+--------------------------------------

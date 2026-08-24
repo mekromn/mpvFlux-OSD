@@ -25,7 +25,7 @@ fun TopLeftPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(20.dp), // Increased spacing for Expressive UI
   ) {
-    RenderPlayerButton(
+    RenderConfigurablePlayerButton(
       button = PlayerButton.BACK_ARROW,
       chapters = emptyList(),
       currentChapter = null,
@@ -41,7 +41,7 @@ fun TopLeftPlayerControlsLandscape(
       activity = activity,
     )
 
-    RenderPlayerButton(
+    RenderConfigurablePlayerButton(
       button = PlayerButton.VIDEO_TITLE,
       chapters = emptyList(),
       currentChapter = null,
@@ -80,8 +80,8 @@ fun TopRightPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(16.dp), // Increased spacing
   ) {
-    buttons.forEach { button ->
-      RenderPlayerButton(
+    buttons.withShaderLabAccessButton().forEach { button ->
+      RenderConfigurablePlayerButton(
         button = button,
         chapters = chapters,
         currentChapter = currentChapter,
@@ -121,8 +121,8 @@ fun BottomRightPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(16.dp), // Increased spacing
   ) {
-    buttons.forEach { button ->
-      RenderPlayerButton(
+    buttons.withShaderLabAccessButton().forEach { button ->
+      RenderConfigurablePlayerButton(
         button = button,
         chapters = chapters,
         currentChapter = currentChapter,
@@ -162,8 +162,8 @@ fun BottomLeftPlayerControlsLandscape(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(16.dp), // Increased spacing
   ) {
-    buttons.forEach { button ->
-      RenderPlayerButton(
+    buttons.withShaderLabAccessButton().forEach { button ->
+      RenderConfigurablePlayerButton(
         button = button,
         chapters = chapters,
         currentChapter = currentChapter,

@@ -1,0 +1,282 @@
+name: R08 Renderer Parity Rebuild
+
+on:
+  push:
+    branches:
+      - agent/upstream-refactor
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r08-renderer-parity-rebuild
+  cancel-in-progress: true
+
+jobs:
+  rebuild-arm64:
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check renderer-parity trigger
+        id: trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || -f .github/R08_RENDERER_PARITY_TRIGGER ]]; then
+            echo 'enabled=yes' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=no' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build metadata
+        if: steps.trigger.outputs.enabled == 'yes'
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "short_sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base_version_code=$(( $(date +%s) / 10 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        if: steps.trigger.outputs.enabled == 'yes'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Install native build dependencies
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y autoconf automake libtool pkg-config ninja-build gperf python3-pip nasm yasm lua5.2 zip unzip binutils wget
+          python3 -m pip install --user --upgrade 'meson>=1.6.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/meson" --version
+
+      - name: Verify resident source before native rebuild
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/verify_mpvlab_manifest.py
+          python3 - <<'PY'
+          from pathlib import Path
+          shader = Path('app/src/main/assets/mpvlab/source/shaders/pixel9-perceptual-expansion-resident-v3.1.glsl').read_text()
+          assert '@@' not in shader, 'resident shader contains unresolved template token'
+          assert shader.count('//!PARAM ') == 39, shader.count('//!PARAM ')
+          print('Resident shader PARAM audit PASS: 39')
+          PY
+
+      - name: Rebuild exact R07 Vulkan renderer plus R08 PARAM support
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/r08_renderer_parity_rebuild.sh
+
+      - name: Replace only arm64 libmpv in repaired MPVLib AAR
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_AAR=app/libs/mpv-android-lib-v0.0.1.aar
+          NEW_LIB=native/mpv-android/buildscripts/prefix/arm64/lib/libmpv.so
+          test -f "$BASE_AAR"
+          test -f "$NEW_LIB"
+
+          rm -rf native/parity-aar
+          mkdir -p native/parity-aar
+          unzip -q "$BASE_AAR" -d native/parity-aar
+
+          test -f native/parity-aar/classes.jar
+          test -f native/parity-aar/jni/arm64-v8a/libplayer.so
+          test -f native/parity-aar/jni/arm64-v8a/libavdevice.so
+          test -f native/parity-aar/jni/arm64-v8a/libxml2.so
+          jar tf native/parity-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVLib.class'
+          jar tf native/parity-aar/classes.jar | grep -Fx 'is/xyz/mpv/MPVNode.class'
+          strings native/parity-aar/jni/arm64-v8a/libavdevice.so | grep -F 'FFmpeg version N-122998-g5ba2525c7a'
+          sha256sum native/parity-aar/classes.jar native/parity-aar/jni/arm64-v8a/libplayer.so | tee /tmp/r08-parity-wrapper-before.sha256
+
+          cp "$NEW_LIB" native/parity-aar/jni/arm64-v8a/libmpv.so
+
+          strings native/parity-aar/jni/arm64-v8a/libmpv.so | grep -F 'N-122998-g5ba2525c7a'
+          strings native/parity-aar/jni/arm64-v8a/libmpv.so | grep -F 'v7.360.0 (v7.360.0-3-gc93aa134)'
+          strings native/parity-aar/jni/arm64-v8a/libmpv.so | grep -F -- '-Dvulkan=enabled'
+          strings native/parity-aar/jni/arm64-v8a/libmpv.so | grep -F 'pl_vulkan_create'
+          readelf -dW native/parity-aar/jni/arm64-v8a/libmpv.so | grep -F 'Shared library: [libvulkan.so]'
+          readelf -dW native/parity-aar/jni/arm64-v8a/libmpv.so | grep -F 'Shared library: [libxml2.so]'
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          root = Path('native/parity-aar/jni/arm64-v8a')
+          local = {p.name for p in root.glob('*.so')}
+          system = {
+              'libc.so', 'libm.so', 'libdl.so', 'liblog.so', 'libandroid.so',
+              'libz.so', 'libEGL.so', 'libGLESv2.so', 'libGLESv3.so',
+              'libOpenSLES.so', 'libmediandk.so', 'libvulkan.so', 'libaaudio.so',
+              'libjnigraphics.so', 'libnativewindow.so',
+          }
+          missing = []
+          report = []
+          for so in sorted(root.glob('*.so')):
+              dynamic = subprocess.check_output(['readelf', '-dW', str(so)], text=True)
+              needed = re.findall(r'Shared library: \[([^]]+)\]', dynamic)
+              report.append(f"{so.name}: {', '.join(needed) if needed else '<none>'}")
+              for dep in needed:
+                  if dep not in local and dep not in system:
+                      missing.append(f'{so.name} -> {dep}')
+
+              program = subprocess.check_output(['readelf', '-lW', str(so)], text=True)
+              loads = [line for line in program.splitlines() if line.lstrip().startswith('LOAD')]
+              assert loads, f'{so.name}: no LOAD segments'
+              minimum = min(int(line.split()[-1], 16) for line in loads)
+              assert minimum >= 0x4000, f'{so.name}: LOAD alignment 0x{minimum:x} < 0x4000'
+
+          Path('/tmp/r08-parity-aar-needed.txt').write_text('\n'.join(report) + '\n')
+          print('\n'.join(report))
+          assert not missing, 'unresolved packaged ELF dependencies: ' + ', '.join(missing)
+          assert 'libxml2.so' in local, 'libxml2.so runtime repair missing'
+          print('Renderer-parity AAR dependency closure + 16 KB alignment PASS')
+          PY
+
+          rm -f native/mpv-android-lib-v0.0.1.renderer-parity.aar
+          (cd native/parity-aar && zip -q -r ../mpv-android-lib-v0.0.1.renderer-parity.aar .)
+          cp native/mpv-android-lib-v0.0.1.renderer-parity.aar "$BASE_AAR"
+
+          rm -rf /tmp/r08-parity-aar-check
+          mkdir -p /tmp/r08-parity-aar-check
+          unzip -q "$BASE_AAR" -d /tmp/r08-parity-aar-check
+          sha256sum /tmp/r08-parity-aar-check/classes.jar /tmp/r08-parity-aar-check/jni/arm64-v8a/libplayer.so | tee /tmp/r08-parity-wrapper-after.sha256
+          diff -u /tmp/r08-parity-wrapper-before.sha256 /tmp/r08-parity-wrapper-after.sha256
+
+      - name: Run Shader Lab tests against renderer-parity AAR
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          python3 tools/verify_mpvlab_manifest.py
+          ./gradlew :app:testStandardDebugUnitTest --stacktrace 2>&1 | tee /tmp/r08-renderer-parity-gradle-test.log
+
+      - name: Prepare persistent signing identity
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE }}
+          SIGNING_KEY_ALIAS_VALUE: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_STORE_PASSWORD_VALUE: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_PASSWORD_VALUE: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in "$SIGNING_KEYSTORE_B64" "$SIGNING_KEY_ALIAS_VALUE" "$SIGNING_STORE_PASSWORD_VALUE" "$SIGNING_KEY_PASSWORD_VALUE"; do
+            [[ -n "$value" ]] || { echo '::error::Persistent signing secret missing'; exit 1; }
+          done
+          keystore="$RUNNER_TEMP/chrovelo-persistent.keystore"
+          printf '%s' "$SIGNING_KEYSTORE_B64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          echo "CHROVELO_SIGNING_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+          echo "CHROVELO_SIGNING_KEY_ALIAS=$SIGNING_KEY_ALIAS_VALUE" >> "$GITHUB_ENV"
+          echo "CHROVELO_SIGNING_STORE_PASSWORD=$SIGNING_STORE_PASSWORD_VALUE" >> "$GITHUB_ENV"
+          echo "CHROVELO_SIGNING_KEY_PASSWORD=$SIGNING_KEY_PASSWORD_VALUE" >> "$GITHUB_ENV"
+
+      - name: Build renderer-parity Pixel APK
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleStandardDebug \
+            -PchroveloVersionCode=${{ steps.meta.outputs.base_version_code }} \
+            --stacktrace 2>&1 | tee /tmp/r08-renderer-parity-gradle-build.log
+          mkdir -p output
+          apk="$(find app/build/outputs/apk/standard/debug -maxdepth 1 -type f -name 'app-standard-arm64-v8a-debug.apk' -print -quit)"
+          [[ -n "$apk" ]] || { echo '::error::arm64 Debug APK not found'; exit 1; }
+          cp "$apk" "output/Chrovelo-R08-renderer-parity-${{ steps.meta.outputs.short_sha }}-arm64-v8a.apk"
+
+      - name: Verify final APK renderer fingerprint and signing
+        if: steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="output/Chrovelo-R08-renderer-parity-${{ steps.meta.outputs.short_sha }}-arm64-v8a.apk"
+          rm -rf /tmp/r08-parity-apk
+          mkdir -p /tmp/r08-parity-apk
+          unzip -q "$apk" 'lib/arm64-v8a/*.so' -d /tmp/r08-parity-apk
+          lib=/tmp/r08-parity-apk/lib/arm64-v8a/libmpv.so
+          test -f "$lib"
+          test -f /tmp/r08-parity-apk/lib/arm64-v8a/libxml2.so
+          strings "$lib" | grep -F 'N-122998-g5ba2525c7a'
+          strings "$lib" | grep -F 'v7.360.0 (v7.360.0-3-gc93aa134)'
+          strings "$lib" | grep -F -- '-Dvulkan=enabled'
+          strings "$lib" | grep -F 'pl_vulkan_create'
+          readelf -dW "$lib" | grep -F 'Shared library: [libvulkan.so]'
+          readelf -dW "$lib" | grep -F 'Shared library: [libxml2.so]'
+
+          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk" | tee /tmp/r08-renderer-parity-apksigner.txt
+          sha256sum "$apk" | tee /tmp/r08-renderer-parity-apk.sha256
+
+      - name: Upload renderer-parity Pixel proof
+        if: steps.trigger.outputs.enabled == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrovelo-R08-renderer-parity-arm64-${{ steps.meta.outputs.short_sha }}
+          path: |
+            output/Chrovelo-R08-renderer-parity-${{ steps.meta.outputs.short_sha }}-arm64-v8a.apk
+            /tmp/r08-renderer-parity-fingerprint.txt
+            /tmp/r08-renderer-parity-apk.sha256
+            /tmp/r08-parity-aar-needed.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Collect failure diagnostics
+        if: failure() && steps.trigger.outputs.enabled == 'yes'
+        shell: bash
+        run: |
+          set +e
+          mkdir -p r08-renderer-parity-failure
+          cp /tmp/r08-renderer-parity-native-build.log r08-renderer-parity-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-gradle-test.log r08-renderer-parity-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-gradle-build.log r08-renderer-parity-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-fingerprint.txt r08-renderer-parity-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-dynamic.txt r08-renderer-parity-failure/ 2>/dev/null || true
+          cp /tmp/r08-renderer-parity-program-headers.txt r08-renderer-parity-failure/ 2>/dev/null || true
+
+      - name: Upload renderer-parity failure diagnostics
+        if: failure() && steps.trigger.outputs.enabled == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrovelo-R08-renderer-parity-failure-${{ steps.meta.outputs.short_sha }}
+          path: r08-renderer-parity-failure
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Commit renderer-parity AAR
+        if: success() && steps.trigger.outputs.enabled == 'yes' && github.event_name == 'push' && github.ref_name == 'agent/upstream-refactor'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- app/libs/mpv-android-lib-v0.0.1.aar
+          if git diff --cached --quiet; then
+            echo 'Renderer-parity AAR already committed.'
+            exit 0
+          fi
+          git commit -m 'R08 restore R07 Vulkan renderer parity'
+          git push origin HEAD:agent/upstream-refactor
